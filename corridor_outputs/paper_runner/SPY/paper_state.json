@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-03-27T19:55:00+00:00",
+  "symbol": "SPY",
+  "price": 634.07,
+  "regime": "RANGE",
+  "center": 635.0,
+  "state": "IDLE",
+  "open_positions": [],
+  "execution_mode": "paper",
+  "candidates": [],
+  "candidate_status": "Option-chain lookup failed; see candidate error.",
+  "candidate_error": "IB option quotes are unavailable for API on this account. Enable delayed/live US options market data permissions in IBKR."
+}

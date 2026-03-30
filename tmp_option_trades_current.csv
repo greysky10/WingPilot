@@ -1,0 +1,2 @@
+symbol,structure,entry_time_utc,exit_time_utc,expiry_date,entry_underlying,exit_underlying,entry_value,exit_value,pnl_points,pnl_dollars,return_pct,sigma,exit_reason,legs
+SPY,put_debit_spread,2026-03-26T19:40:00+00:00,2026-03-26T19:59:00+00:00,2026-03-31,645.99,645.08,15.9816,17.8389,1.8573,185.73,11.6215,0.1,dataset_end,BUY 10 SPY 2026-03-31 646 PUT ; SELL 10 SPY 2026-03-31 642 PUT
