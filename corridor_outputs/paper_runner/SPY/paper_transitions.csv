@@ -1,0 +1,12 @@
+timestamp,symbol,from_state,to_state,reason,regime,price,center_price,drift_count,layer_count
+2026-03-30T13:45:00+00:00,SPY,IDLE,ACTIVE_CENTERED,Entered range corridor.,RANGE,637.14,635.0,0,1
+2026-03-30T14:15:00+00:00,SPY,IDLE,ACTIVE_CENTERED,Entered range corridor.,RANGE,636.19,635.0,0,1
+2026-03-30T14:40:00+00:00,SPY,IDLE,ACTIVE_CENTERED,Entered range corridor.,RANGE,635.96,635.0,0,1
+2026-03-30T17:05:00+00:00,SPY,IDLE,ACTIVE_CENTERED,Entered range corridor.,RANGE,635.03,636.0,0,1
+2026-03-30T17:30:00+00:00,SPY,ACTIVE_CENTERED,DRIFTING,Price moved outside the tolerance band.,RANGE,633.25,636.0,1,2
+2026-03-30T17:35:00+00:00,SPY,DRIFTING,REBUILD,Drift persisted and rebuild cooldown passed.,RANGE,632.84,637.0,2,2
+2026-03-30T17:40:00+00:00,SPY,REBUILD,ACTIVE_CENTERED,Rebuilt corridor around the new center.,RANGE,633.51,637.0,0,1
+2026-03-30T18:35:00+00:00,SPY,IDLE,ACTIVE_CENTERED,Entered range corridor.,RANGE,632.71,635.0,0,1
+2026-03-24T13:30:00+00:00,SPY,IDLE,ABORT,Regime turned TREND_DOWN.,TREND_DOWN,652.79,,0,0
+2026-03-24T13:30:00+00:00,SPY,IDLE,ABORT,Volume expansion while price broke out of the corridor.,NEUTRAL,652.79,,0,0
+2026-03-24T13:30:00+00:00,SPY,IDLE,ABORT,Volume expansion while price broke out of the corridor.,NEUTRAL,652.79,,0,0

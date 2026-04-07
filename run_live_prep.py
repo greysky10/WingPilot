@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from corridor.config import CorridorConfig
+from corridor.data.ib_contracts import default_center_rounding_for_symbol
 from corridor.data.historical_loader import HistoricalLoadConfig, load_intraday_bars
 from corridor.data.ib_loader import IBHistoricalRequest, fetch_intraday_bars
 from corridor.models import CenterMethod
@@ -16,11 +18,12 @@ from corridor.options.butterfly_selector import select_butterflies
 from corridor.options.chain_loader import IBOptionChainLoader
 from corridor.strategy.center_estimator import CenterEstimator
 from corridor.strategy.regime import RangeRegimeDetector
+from strategy import load_local_env
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare a live corridor snapshot and candidate butterflies.")
-    parser.add_argument("--symbol", default="SPY", help="Ticker symbol.")
+    parser.add_argument("--symbol", default="SPX", help="Ticker symbol.")
     parser.add_argument("--mode", default="delayed", choices=["delayed", "live"], help="IB market-data mode.")
     parser.add_argument("--bars-csv", help="Optional bars CSV instead of IBKR.")
     parser.add_argument("--center-method", default=CenterMethod.VWAP.value, choices=[item.value for item in CenterMethod])
@@ -57,10 +60,14 @@ def load_recent_frame(cfg: CorridorConfig, args: argparse.Namespace) -> pd.DataF
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    load_local_env()
     args = parse_args(argv)
     cfg = CorridorConfig(
         symbol=args.symbol.upper(),
         center_method=CenterMethod(args.center_method),
+        center_rounding=default_center_rounding_for_symbol(args.symbol.upper()),
+        ib_host=os.getenv("IB_HOST", "127.0.0.1"),
+        ib_port=int(os.getenv("IB_PORT", "4001")),
         ib_client_id=args.client_id,
         payoff_mode="underlying_only",
     )

@@ -32,11 +32,14 @@ class CorridorState(str, Enum):
 class ActionType(str, Enum):
     ENTER_PRIMARY = "ENTER_PRIMARY"
     ADD_SUPPLEMENTAL = "ADD_SUPPLEMENTAL"
+    ENTRY_FILTERED = "ENTRY_FILTERED"
     DRIFT_STARTED = "DRIFT_STARTED"
     DRIFT_RESOLVED = "DRIFT_RESOLVED"
     REBUILD_REQUESTED = "REBUILD_REQUESTED"
     REBUILT = "REBUILT"
     ABORTED = "ABORTED"
+    STOP_LOSS = "STOP_LOSS"
+    TAKE_PROFIT = "TAKE_PROFIT"
     SESSION_FLUSH = "SESSION_FLUSH"
     LIVE_PREP = "LIVE_PREP"
 
@@ -57,6 +60,10 @@ class CenterEstimate:
     method: CenterMethod
     confidence: float
     diagnostics: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def actual_tolerance(self) -> float:
+        return max(0.0, (float(self.tolerance_high) - float(self.tolerance_low)) / 2.0)
 
 
 @dataclass(slots=True)
@@ -81,6 +88,8 @@ class ActiveButterfly:
     kind: LayerKind
     center_price: float
     width: float
+    lower_width: float
+    upper_width: float
     lower_strike: float
     body_strike: float
     upper_strike: float

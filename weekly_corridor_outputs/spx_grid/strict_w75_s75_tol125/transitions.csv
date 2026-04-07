@@ -1,0 +1,116 @@
+timestamp,symbol,week_key,from_state,to_state,reason,regime,price,center_price,active_butterflies,adjustments_this_week
+2025-05-06T15:00:00+00:00,SPX,2025-05-05,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,5628.93,0.0,3,0
+2025-05-06T15:30:00+00:00,SPX,2025-05-05,ACTIVE,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,5635.67,0.0,3,0
+2025-05-19T18:30:00+00:00,SPX,2025-05-19,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,5953.68,0.0,3,0
+2025-05-19T19:00:00+00:00,SPX,2025-05-19,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,5955.1,0.0,4,1
+2025-05-19T20:00:00+00:00,SPX,2025-05-19,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,5964.16,0.0,4,1
+2025-05-27T15:00:00+00:00,SPX,2025-05-26,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,5894.14,0.0,3,0
+2025-05-27T15:30:00+00:00,SPX,2025-05-26,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,5899.09,0.0,4,1
+2025-05-29T17:30:00+00:00,SPX,2025-05-26,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,5905.35,0.0,4,1
+2025-06-02T14:00:00+00:00,SPX,2025-06-02,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,5869.3,0.0,3,0
+2025-06-02T14:30:00+00:00,SPX,2025-06-02,ACTIVE,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,5903.14,0.0,3,0
+2025-06-09T19:00:00+00:00,SPX,2025-06-09,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6019.27,0.0,3,0
+2025-06-09T19:30:00+00:00,SPX,2025-06-09,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6013.03,0.0,4,1
+2025-06-11T14:30:00+00:00,SPX,2025-06-09,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6056.74,0.0,4,1
+2025-06-16T14:00:00+00:00,SPX,2025-06-16,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6040.39,0.0,3,0
+2025-06-16T14:30:00+00:00,SPX,2025-06-16,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6050.29,0.0,4,1
+2025-06-17T19:00:00+00:00,SPX,2025-06-16,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,5982.73,0.0,4,1
+2025-06-23T14:00:00+00:00,SPX,2025-06-23,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,5996.31,0.0,3,0
+2025-06-23T14:30:00+00:00,SPX,2025-06-23,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6000.39,0.0,4,1
+2025-06-24T13:30:00+00:00,SPX,2025-06-23,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6068.27,0.0,4,1
+2025-07-07T15:00:00+00:00,SPX,2025-07-07,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6243.16,0.0,3,0
+2025-07-07T15:30:00+00:00,SPX,2025-07-07,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6241.5,0.0,4,1
+2025-07-07T19:00:00+00:00,SPX,2025-07-07,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6220.87,0.0,4,1
+2025-07-14T14:00:00+00:00,SPX,2025-07-14,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6249.3,0.0,3,0
+2025-07-14T14:30:00+00:00,SPX,2025-07-14,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6247.28,0.0,4,1
+2025-07-18T19:00:00+00:00,SPX,2025-07-14,ADJUSTED,EXITED,Forced weekly exit window reached.,RANGE,6291.6,0.0,4,1
+2025-07-21T14:00:00+00:00,SPX,2025-07-21,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6329.87,0.0,3,0
+2025-07-21T14:30:00+00:00,SPX,2025-07-21,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6331.09,0.0,4,1
+2025-07-22T19:30:00+00:00,SPX,2025-07-21,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6312.88,0.0,4,1
+2025-07-28T14:00:00+00:00,SPX,2025-07-28,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6396.75,0.0,3,0
+2025-07-28T14:30:00+00:00,SPX,2025-07-28,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6396.96,0.0,4,1
+2025-07-28T16:30:00+00:00,SPX,2025-07-28,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6392.32,0.0,4,1
+2025-08-04T14:30:00+00:00,SPX,2025-08-04,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6310.74,0.0,3,0
+2025-08-04T15:00:00+00:00,SPX,2025-08-04,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6312.15,0.0,4,1
+2025-08-04T17:30:00+00:00,SPX,2025-08-04,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6323.02,0.0,4,1
+2025-08-11T14:00:00+00:00,SPX,2025-08-11,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6392.64,0.0,3,0
+2025-08-11T14:30:00+00:00,SPX,2025-08-11,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6390.11,0.0,4,1
+2025-08-11T16:00:00+00:00,SPX,2025-08-11,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6397.41,0.0,4,1
+2025-08-18T14:00:00+00:00,SPX,2025-08-18,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6448.65,0.0,3,0
+2025-08-18T14:30:00+00:00,SPX,2025-08-18,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6448.36,0.0,4,1
+2025-08-20T14:00:00+00:00,SPX,2025-08-18,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6370.36,0.0,4,1
+2025-08-25T14:00:00+00:00,SPX,2025-08-25,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6457.54,0.0,3,0
+2025-08-25T14:30:00+00:00,SPX,2025-08-25,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6455.52,0.0,4,1
+2025-08-26T18:30:00+00:00,SPX,2025-08-25,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6449.77,0.0,4,1
+2025-09-02T14:00:00+00:00,SPX,2025-09-01,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6404.18,0.0,3,0
+2025-09-02T14:30:00+00:00,SPX,2025-09-01,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6406.17,0.0,4,1
+2025-09-02T15:30:00+00:00,SPX,2025-09-01,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6374.2,0.0,4,1
+2025-09-08T14:00:00+00:00,SPX,2025-09-08,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6494.02,0.0,3,0
+2025-09-08T14:30:00+00:00,SPX,2025-09-08,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6498.37,0.0,4,1
+2025-09-08T17:30:00+00:00,SPX,2025-09-08,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6495.45,0.0,4,1
+2025-09-16T17:30:00+00:00,SPX,2025-09-15,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6611.23,0.0,3,0
+2025-09-16T18:00:00+00:00,SPX,2025-09-15,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6609.92,0.0,4,1
+2025-09-19T19:00:00+00:00,SPX,2025-09-15,ADJUSTED,EXITED,Forced weekly exit window reached.,RANGE,6657.58,0.0,4,1
+2025-09-22T14:00:00+00:00,SPX,2025-09-22,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6661.0,0.0,3,0
+2025-09-22T14:30:00+00:00,SPX,2025-09-22,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6667.41,0.0,4,1
+2025-09-22T18:00:00+00:00,SPX,2025-09-22,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6688.94,0.0,4,1
+2025-09-29T14:00:00+00:00,SPX,2025-09-29,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6667.71,0.0,3,0
+2025-09-29T14:30:00+00:00,SPX,2025-09-29,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6673.81,0.0,4,1
+2025-10-01T17:30:00+00:00,SPX,2025-09-29,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6704.38,0.0,4,1
+2025-10-06T14:00:00+00:00,SPX,2025-10-06,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6723.75,0.0,3,0
+2025-10-06T14:30:00+00:00,SPX,2025-10-06,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6729.93,0.0,4,1
+2025-10-06T16:00:00+00:00,SPX,2025-10-06,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6740.29,0.0,4,1
+2025-10-13T17:00:00+00:00,SPX,2025-10-13,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6667.9,0.0,3,0
+2025-10-13T17:30:00+00:00,SPX,2025-10-13,ACTIVE,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6652.55,0.0,3,0
+2025-10-20T14:00:00+00:00,SPX,2025-10-20,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6715.26,0.0,3,0
+2025-10-20T14:30:00+00:00,SPX,2025-10-20,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6721.19,0.0,4,1
+2025-10-20T16:00:00+00:00,SPX,2025-10-20,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6727.83,0.0,4,1
+2025-11-03T15:00:00+00:00,SPX,2025-11-03,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6842.96,0.0,3,0
+2025-11-03T15:30:00+00:00,SPX,2025-11-03,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6824.09,0.0,4,1
+2025-11-04T14:30:00+00:00,SPX,2025-11-03,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6768.85,0.0,4,1
+2025-11-10T15:30:00+00:00,SPX,2025-11-10,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6807.44,0.0,3,0
+2025-11-10T16:00:00+00:00,SPX,2025-11-10,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6777.54,0.0,4,1
+2025-11-12T19:00:00+00:00,SPX,2025-11-10,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6855.25,0.0,4,1
+2025-11-24T15:00:00+00:00,SPX,2025-11-24,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6666.14,0.0,3,0
+2025-11-24T15:30:00+00:00,SPX,2025-11-24,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6673.51,0.0,4,1
+2025-11-24T19:00:00+00:00,SPX,2025-11-24,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6710.57,0.0,4,1
+2025-12-08T15:00:00+00:00,SPX,2025-12-08,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6868.24,0.0,3,0
+2025-12-08T15:30:00+00:00,SPX,2025-12-08,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6860.28,0.0,4,1
+2025-12-12T16:00:00+00:00,SPX,2025-12-08,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6817.24,0.0,4,1
+2025-12-15T15:00:00+00:00,SPX,2025-12-15,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6823.97,0.0,3,0
+2025-12-15T15:30:00+00:00,SPX,2025-12-15,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6818.52,0.0,4,1
+2025-12-17T16:00:00+00:00,SPX,2025-12-15,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6758.9,0.0,4,1
+2025-12-22T15:00:00+00:00,SPX,2025-12-22,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6863.33,0.0,3,0
+2025-12-22T15:30:00+00:00,SPX,2025-12-22,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6863.46,0.0,4,1
+2025-12-22T19:30:00+00:00,SPX,2025-12-22,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6877.19,0.0,4,1
+2025-12-29T15:00:00+00:00,SPX,2025-12-29,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6901.59,0.0,3,0
+2025-12-29T15:30:00+00:00,SPX,2025-12-29,ACTIVE,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6908.98,0.0,3,0
+2026-01-05T15:00:00+00:00,SPX,2026-01-05,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6902.9,0.0,3,0
+2026-01-05T15:30:00+00:00,SPX,2026-01-05,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6912.82,0.0,4,1
+2026-01-08T21:00:00+00:00,SPX,2026-01-05,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6921.1,0.0,4,1
+2026-01-12T15:00:00+00:00,SPX,2026-01-12,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6958.51,0.0,3,0
+2026-01-12T15:30:00+00:00,SPX,2026-01-12,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6956.69,0.0,4,1
+2026-01-16T20:00:00+00:00,SPX,2026-01-12,ADJUSTED,EXITED,Forced weekly exit window reached.,RANGE,6950.79,0.0,4,1
+2026-01-26T15:00:00+00:00,SPX,2026-01-26,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6945.82,0.0,3,0
+2026-01-26T15:30:00+00:00,SPX,2026-01-26,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6952.47,0.0,4,1
+2026-01-26T18:30:00+00:00,SPX,2026-01-26,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6963.81,0.0,4,1
+2026-02-02T15:00:00+00:00,SPX,2026-02-02,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6959.46,0.0,3,0
+2026-02-02T15:30:00+00:00,SPX,2026-02-02,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6974.08,0.0,4,1
+2026-02-03T18:30:00+00:00,SPX,2026-02-02,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6881.95,0.0,4,1
+2026-02-09T15:00:00+00:00,SPX,2026-02-09,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6934.32,0.0,3,0
+2026-02-09T15:30:00+00:00,SPX,2026-02-09,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6954.5,0.0,4,1
+2026-02-10T15:30:00+00:00,SPX,2026-02-09,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6980.83,0.0,4,1
+2026-02-23T15:00:00+00:00,SPX,2026-02-23,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6868.98,0.0,3,0
+2026-02-23T15:30:00+00:00,SPX,2026-02-23,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6856.26,0.0,4,1
+2026-02-25T18:30:00+00:00,SPX,2026-02-23,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6940.08,0.0,4,1
+2026-03-02T15:00:00+00:00,SPX,2026-03-02,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6857.38,0.0,3,0
+2026-03-02T15:30:00+00:00,SPX,2026-03-02,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6844.86,0.0,4,1
+2026-03-03T14:30:00+00:00,SPX,2026-03-02,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6759.52,0.0,4,1
+2026-03-09T17:30:00+00:00,SPX,2026-03-09,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6700.55,0.0,3,0
+2026-03-09T18:00:00+00:00,SPX,2026-03-09,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6702.77,0.0,4,1
+2026-03-09T19:30:00+00:00,SPX,2026-03-09,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_UP,6796.18,0.0,4,1
+2026-03-16T14:00:00+00:00,SPX,2026-03-16,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6711.6,0.0,3,0
+2026-03-16T14:30:00+00:00,SPX,2026-03-16,ACTIVE,ADJUSTED,Added a single weekly adjustment butterfly after sustained drift.,RANGE,6699.85,0.0,4,1
+2026-03-16T16:30:00+00:00,SPX,2026-03-16,ADJUSTED,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6684.87,0.0,4,1
+2026-03-23T15:30:00+00:00,SPX,2026-03-23,IDLE,ACTIVE,Deployed the initial 3-butterfly weekly corridor.,RANGE,6632.35,0.0,3,0
+2026-03-23T16:00:00+00:00,SPX,2026-03-23,ACTIVE,ABORTED,Trend or breakout expansion invalidated the weekly corridor.,TREND_DOWN,6590.52,0.0,3,0

@@ -40,7 +40,7 @@ class RecenterRuleEngine:
             return DriftAssessment(False, False, 0.0, 0, True, False, False, "")
 
         drift_distance = abs(price - center.center_price)
-        outside_tolerance = drift_distance > self.config.center_tolerance
+        outside_tolerance = drift_distance > center.actual_tolerance
         outside_coverage = price < center.lower_band or price > center.upper_band
         next_drift_count = current_drift_count + 1 if outside_tolerance else 0
 

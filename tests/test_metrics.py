@@ -17,6 +17,7 @@ class CorridorMetricsTests(unittest.TestCase):
             starting_capital=100000.0,
             contracts_per_layer=2,
             option_multiplier=100,
+            per_contract_slippage=0.05,
         )
         ts1 = pd.Timestamp("2025-01-02 15:00:00", tz="UTC")
         ts2 = ts1 + pd.Timedelta(minutes=5)
@@ -162,19 +163,29 @@ class CorridorMetricsTests(unittest.TestCase):
 
         self.assertEqual(summary["total_return"], 2.0)
         self.assertEqual(summary["total_return_units"], "modeled_points")
+        self.assertEqual(summary["stress_profile"], "none")
+        self.assertEqual(summary["stress_entry_debit_multiplier"], 1.0)
+        self.assertEqual(summary["stress_peak_value_multiplier"], 1.0)
+        self.assertEqual(summary["stress_residual_floor_multiplier"], 1.0)
+        self.assertEqual(summary["stress_slippage_multiplier"], 1.0)
+        self.assertEqual(summary["stress_close_value_haircut_pct"], 0.0)
         self.assertEqual(summary["model_points"], 2.0)
         self.assertEqual(summary["gross_modeled_pnl"], 2.4)
         self.assertEqual(summary["net_modeled_pnl"], 2.0)
         self.assertEqual(summary["dollar_pnl_per_1_lot"], 200.0)
+        self.assertEqual(summary["per_contract_slippage"], 0.05)
         self.assertEqual(summary["net_dollar_pnl"], 400.0)
         self.assertEqual(summary["gross_dollar_pnl"], 480.0)
+        self.assertEqual(summary["gross_profit"], 480.0)
+        self.assertEqual(summary["net_slippage_adjusted_profit"], 400.0)
+        self.assertEqual(summary["friction_adjustment_dollars"], 80.0)
         self.assertEqual(summary["max_gross_deployment_dollars"], 231.2)
         self.assertEqual(summary["return_on_capital"], 0.004)
         self.assertEqual(summary["max_modeled_state_capital_at_risk"], 1.156)
         self.assertEqual(summary["max_modeled_execution_capital_at_risk"], 1.156)
-        self.assertEqual(summary["max_modeled_close_friction_reserve"], 0.056)
-        self.assertEqual(summary["max_modeled_capital_at_risk"], 1.212)
-        self.assertAlmostEqual(summary["return_on_max_risk"], 400.0 / 242.4, places=6)
+        self.assertEqual(summary["max_modeled_close_friction_reserve"], 0.226)
+        self.assertEqual(summary["max_modeled_capital_at_risk"], 1.382)
+        self.assertAlmostEqual(summary["return_on_max_risk"], 400.0 / 276.4, places=6)
         self.assertEqual(summary["worst_day_pnl"], 1.0)
         self.assertEqual(summary["worst_day_pnl_dollars"], 200.0)
         self.assertEqual(summary["best_day_pnl"], 1.0)
@@ -197,6 +208,7 @@ class CorridorMetricsTests(unittest.TestCase):
         self.assertEqual(summary["cost_drag_from_rebuilding"], 1.212)
         self.assertEqual(summary["corridor_occupancy_rate"], 0.4)
         self.assertIn("return_on_capital", summary["metric_definitions"])
+        self.assertIn("stress_profile", summary["metric_definitions"])
         self.assertIn("max_modeled_execution_capital_at_risk", summary["metric_definitions"])
 
     def test_day_level_profit_factor_and_best_worst_day_fields(self) -> None:
@@ -206,6 +218,7 @@ class CorridorMetricsTests(unittest.TestCase):
             starting_capital=100000.0,
             contracts_per_layer=1,
             option_multiplier=100,
+            per_contract_slippage=0.05,
         )
         ts1 = pd.Timestamp("2025-01-02 15:00:00", tz="UTC")
         ts2 = ts1 + pd.Timedelta(minutes=5)
@@ -363,8 +376,8 @@ class CorridorMetricsTests(unittest.TestCase):
         self.assertEqual(summary["max_modeled_state_capital_at_risk"], 1.156)
         self.assertEqual(summary["max_modeled_execution_capital_at_risk"], 2.312)
         self.assertEqual(summary["max_gross_deployment_dollars"], 231.2)
-        self.assertEqual(summary["max_modeled_close_friction_reserve"], 0.112)
-        self.assertEqual(summary["max_modeled_capital_at_risk"], 2.424)
+        self.assertEqual(summary["max_modeled_close_friction_reserve"], 0.452)
+        self.assertEqual(summary["max_modeled_capital_at_risk"], 2.764)
         self.assertEqual(
             summary["max_modeled_capital_at_risk_assumption"],
             "conservative_open_before_close_within_same_timestamp_plus_close_friction_reserve",

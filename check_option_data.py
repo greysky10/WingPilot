@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
+from corridor.data.ib_contracts import build_option_contract, build_underlying_contract, chain_sort_key
+
 try:
-    from ib_insync import IB, Option, Stock
+    from ib_insync import IB
 except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency
     IB = None  # type: ignore[assignment]
-    Option = None  # type: ignore[assignment]
-    Stock = None  # type: ignore[assignment]
     IB_IMPORT_ERROR = exc
 else:
     IB_IMPORT_ERROR = None
@@ -37,9 +37,9 @@ class QuoteProbeResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check whether IBKR API can retrieve SPY option quotes and classify them as LIVE, DELAYED, or NOT_AVAILABLE."
+        description="Check whether IBKR API can retrieve option quotes and classify them as LIVE, DELAYED, or NOT_AVAILABLE."
     )
-    parser.add_argument("--symbol", default="SPY", help="Underlying symbol to probe.")
+    parser.add_argument("--symbol", default="SPX", help="Underlying symbol to probe.")
     parser.add_argument("--host", default=os.getenv("IB_HOST", "localhost"), help="IB host.")
     parser.add_argument("--port", type=int, default=int(os.getenv("IB_PORT", "4002")), help="IB API port.")
     parser.add_argument("--client-id", type=int, default=90, help="IB client id for the probe.")
@@ -100,29 +100,17 @@ def choose_option_contract(
     right: str,
     dte_min: int,
 ) -> tuple[object, float]:
-    stock = Stock(symbol, exchange, currency)
-    qualified = ib.qualifyContracts(stock)
+    underlying_contract = build_underlying_contract(symbol, exchange, currency)
+    qualified = ib.qualifyContracts(underlying_contract)
     if not qualified:
-        raise RuntimeError(f"Unable to qualify underlying stock contract for {symbol}.")
+        raise RuntimeError(f"Unable to qualify underlying contract for {symbol}.")
     underlying = qualified[0]
     reference_price = choose_reference_price(ib, underlying)
 
     chains = ib.reqSecDefOptParams(underlying.symbol, "", underlying.secType, underlying.conId)
     if not chains:
         raise RuntimeError(f"IB returned no option chain definitions for {symbol}.")
-
-    preferred = None
-    for chain in chains:
-        if chain.exchange == exchange and chain.tradingClass == symbol:
-            preferred = chain
-            break
-    if preferred is None:
-        for chain in chains:
-            if chain.exchange == exchange:
-                preferred = chain
-                break
-    if preferred is None:
-        preferred = chains[0]
+    preferred = sorted(chains, key=lambda item: chain_sort_key(symbol, exchange, item))[0]
 
     expiry = expiry_arg.strip()
     if not expiry:
@@ -139,13 +127,14 @@ def choose_option_contract(
             raise RuntimeError(f"No strikes returned in option chain for {symbol}.")
         strike = min(valid_strikes, key=lambda item: abs(item - reference_price))
 
-    option_contract = Option(
+    option_contract = build_option_contract(
         symbol=symbol,
-        lastTradeDateOrContractMonth=expiry,
+        expiry=expiry,
         strike=strike,
         right=right,
         exchange=exchange,
         currency=currency,
+        trading_class=str(getattr(preferred, "tradingClass", "") or "") or None,
     )
     qualified_option = ib.qualifyContracts(option_contract)
     if not qualified_option:

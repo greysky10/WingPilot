@@ -1,0 +1,170 @@
+{
+  "report_timestamp": "2026-04-07T20:04:30.709853+00:00",
+  "report_date": "2026-04-07",
+  "symbol": "SPX",
+  "execution_mode": "paper",
+  "startup_mode": "warmup_only",
+  "history_seeded": false,
+  "history_seed_status": "History seed unavailable. Running in warmup-only mode from live market data. Reason: IB historical bars unavailable for SPX (5 D, 5 mins): Historical Market Data Service error message:Trading TWS session is connected from a different IP address Close the other trading TWS/Gateway session or reconnect from the same IP.",
+  "model_ready": true,
+  "warmup_mode": true,
+  "execution_halted_reason": null,
+  "latest_timestamp": "2026-04-07T19:55:00+00:00",
+  "latest_price": 6592.26,
+  "latest_regime": "RANGE",
+  "latest_center": 6585.0,
+  "latest_actual_tolerance": 12.5,
+  "latest_state": "IDLE",
+  "history_bars": 62,
+  "warmup_remaining_bars": 0,
+  "candidate_count": 0,
+  "candidate_status": "No qualifying butterflies matched the current center and spread filters. Rejections: spread_too_wide=27, missing_legs=0, non_positive_debit=0.",
+  "candidate_error": null,
+  "candidate_diagnostics": {
+    "target_body": 6585.0,
+    "available_quotes": 81,
+    "expiries_considered": 3,
+    "call_bodies_considered": 27,
+    "attempted_structures": 27,
+    "rejection_counts": {
+      "missing_legs": 0,
+      "non_positive_debit": 0,
+      "spread_too_wide": 27
+    },
+    "sample_rejections": [
+      {
+        "expiry": "20260413",
+        "body_strike": 6565.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.55,
+        "total_spread": 3.5,
+        "spread_ratio": 0.9859,
+        "lower_strike": 6515.0,
+        "upper_strike": 6615.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6570.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.55,
+        "total_spread": 3.3,
+        "spread_ratio": 0.9296,
+        "lower_strike": 6520.0,
+        "upper_strike": 6620.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6575.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.55,
+        "total_spread": 3.5,
+        "spread_ratio": 0.9859,
+        "lower_strike": 6525.0,
+        "upper_strike": 6625.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6580.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.65,
+        "total_spread": 3.5,
+        "spread_ratio": 0.9589,
+        "lower_strike": 6530.0,
+        "upper_strike": 6630.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6585.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.75,
+        "total_spread": 3.3,
+        "spread_ratio": 0.88,
+        "lower_strike": 6535.0,
+        "upper_strike": 6635.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6590.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.8,
+        "total_spread": 3.2,
+        "spread_ratio": 0.8421,
+        "lower_strike": 6540.0,
+        "upper_strike": 6640.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6595.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.85,
+        "total_spread": 3.3,
+        "spread_ratio": 0.8571,
+        "lower_strike": 6545.0,
+        "upper_strike": 6645.0
+      },
+      {
+        "expiry": "20260413",
+        "body_strike": 6600.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 3.85,
+        "total_spread": 3.3,
+        "spread_ratio": 0.8571,
+        "lower_strike": 6550.0,
+        "upper_strike": 6650.0
+      }
+    ]
+  },
+  "wing_stats": {
+    "symmetric": 0,
+    "broken_upper": 0,
+    "broken_lower": 0,
+    "guard_fails": 0
+  },
+  "adaptive_fallback_rate": 0.0,
+  "fallback_type_distribution": {
+    "counts": {
+      "broken_upper": 0,
+      "broken_lower": 0
+    },
+    "rates": {
+      "broken_upper": 0.0,
+      "broken_lower": 0.0
+    },
+    "guard_fails": 0,
+    "total_selected": 0
+  },
+  "open_positions_count": 0,
+  "open_position_bodies": "",
+  "transitions_today_total": 0,
+  "actions_today_total": 0,
+  "orders_today_total": 0,
+  "actions_today_by_type": {},
+  "orders_today_by_status": {},
+  "orders_today_by_side": {},
+  "top_order_reasons_today": {},
+  "open_orders_submitted_today": 0,
+  "close_orders_submitted_today": 0,
+  "filled_orders_today": 0,
+  "filled_open_orders_today": 0,
+  "filled_close_orders_today": 0,
+  "blocked_or_skipped_orders_today": 0,
+  "avg_open_fill_edge_vs_quote": null,
+  "avg_open_fill_edge_vs_limit": null,
+  "avg_open_limit_vs_quote": null,
+  "avg_close_fill_edge_vs_quote": null,
+  "avg_close_fill_edge_vs_limit": null,
+  "avg_close_limit_vs_quote": null,
+  "avg_filled_spread_ratio": null,
+  "worst_open_fill_edge_vs_quote": null,
+  "worst_close_fill_edge_vs_quote": null,
+  "best_open_fill_edge_vs_quote": null,
+  "best_close_fill_edge_vs_quote": null
+}

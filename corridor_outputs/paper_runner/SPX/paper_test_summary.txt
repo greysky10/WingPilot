@@ -1,0 +1,10 @@
+Paper Test Summary | WARN | 2026-04-07 | SPX
+Headline: Paper day is mixed; some checks need review. State=IDLE Regime=RANGE Startup=warmup_only
+Startup: WARN | Model ready, but warmup/history state is not ideal.
+Runner: PASS | Runner is operating without a recorded execution halt.
+Fills: WARN | No filled orders yet today; fill quality is not evaluated.
+Spread: WARN | No filled orders yet; spread quality is not evaluated.
+Adaptive: PASS | Adaptive fallback rate 0.00% (broken_upper=0, broken_lower=0).
+Orders: PASS | Filled orders today=0, blocked/skipped=0, open_positions=0.
+Diagnostics: WARN | Top candidate rejection: spread_too_wide=27.
+Action: Paper test is usable, but review the warning fields before considering live capital.

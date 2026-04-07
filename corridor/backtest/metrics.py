@@ -34,6 +34,8 @@ def compute_metrics(config: CorridorConfig, actions: list[ActionRecord], equity_
 
     actions_frame = actions_to_frame(actions)
     closed_layer_stats = _closed_layer_stats(actions_frame)
+    filtered_entry_stats = _filtered_entry_stats(actions_frame)
+    paper_spread_penalty_stats = _paper_spread_penalty_stats(actions_frame, config)
     rebuild_stats = _rebuild_stats(actions_frame, equity)
     risk_stats = _modeled_risk_stats(config, actions_frame, equity)
 
@@ -43,6 +45,7 @@ def compute_metrics(config: CorridorConfig, actions: list[ActionRecord], equity_
     dollar_pnl_per_1_lot = net_modeled_pnl * config.option_multiplier
     net_dollar_pnl = dollar_pnl_per_1_lot * config.contracts_per_layer
     gross_dollar_pnl = gross_modeled_pnl * config.option_multiplier * config.contracts_per_layer
+    friction_adjustment_dollars = gross_dollar_pnl - net_dollar_pnl
     max_modeled_state_capital_at_risk = risk_stats["max_modeled_state_capital_at_risk"]
     max_modeled_execution_capital_at_risk = risk_stats["max_modeled_execution_capital_at_risk"]
     max_modeled_close_friction_reserve = risk_stats["max_modeled_close_friction_reserve"]
@@ -91,15 +94,25 @@ def compute_metrics(config: CorridorConfig, actions: list[ActionRecord], equity_
             # Backward-compatible alias. This remains modeled-unit output only.
             "total_return": round(net_modeled_pnl, 4),
             "total_return_units": "modeled_points",
+            "stress_profile": config.stress_profile,
+            "stress_entry_debit_multiplier": round(float(config.stress_entry_debit_multiplier), 4),
+            "stress_peak_value_multiplier": round(float(config.stress_peak_value_multiplier), 4),
+            "stress_residual_floor_multiplier": round(float(config.stress_residual_floor_multiplier), 4),
+            "stress_slippage_multiplier": round(float(config.stress_slippage_multiplier), 4),
+            "stress_close_value_haircut_pct": round(float(config.stress_close_value_haircut_pct), 4),
             "model_points": round(model_points, 4),
             "gross_modeled_pnl": round(gross_modeled_pnl, 4),
             "net_modeled_pnl": round(net_modeled_pnl, 4),
             "starting_capital": round(float(config.starting_capital), 4),
             "contracts_per_layer": int(config.contracts_per_layer),
             "option_multiplier": int(config.option_multiplier),
+            "per_contract_slippage": round(float(config.per_contract_slippage), 4),
             "dollar_pnl_per_1_lot": round(dollar_pnl_per_1_lot, 4),
             "gross_dollar_pnl": round(gross_dollar_pnl, 4),
             "net_dollar_pnl": round(net_dollar_pnl, 4),
+            "gross_profit": round(gross_dollar_pnl, 4),
+            "net_slippage_adjusted_profit": round(net_dollar_pnl, 4),
+            "friction_adjustment_dollars": round(friction_adjustment_dollars, 4),
             "max_gross_deployment_dollars": round(max_gross_deployment_dollars, 4),
             "max_modeled_state_capital_at_risk": round(max_modeled_state_capital_at_risk, 4),
             "max_modeled_state_capital_at_risk_dollars": round(max_modeled_state_capital_at_risk_dollars, 4),
@@ -137,6 +150,19 @@ def compute_metrics(config: CorridorConfig, actions: list[ActionRecord], equity_
             "gross_losers": round(float(closed_layer_stats["gross_losers"]), 4),
             "gross_winners_dollars": round(gross_winners_dollars, 4),
             "gross_losers_dollars": round(gross_losers_dollars, 4),
+            "paper_spread_gate_enabled": bool(config.paper_spread_gate_enabled),
+            "paper_spread_gate_mode": config.paper_spread_gate_mode,
+            "paper_spread_gate_source": config.paper_spread_gate_source,
+            "paper_spread_gate_spread_ratio": round(float(config.paper_spread_gate_spread_ratio), 4),
+            "paper_spread_gate_total_spread": round(float(config.paper_spread_gate_total_spread), 4),
+            "paper_spread_gate_sample_count": int(config.paper_spread_gate_sample_count),
+            "paper_spread_gate_rejection_count": int(config.paper_spread_gate_rejection_count),
+            "paper_spread_penalty_per_side": round(float(paper_spread_penalty_stats["per_side"]), 4),
+            "paper_spread_penalty_round_trip": round(float(paper_spread_penalty_stats["round_trip"]), 4),
+            "paper_spread_penalty_dollars": round(float(paper_spread_penalty_stats["dollars"]), 4),
+            "execution_filtered_entries": int(filtered_entry_stats["filtered_entries"]),
+            "execution_filtered_primary_entries": int(filtered_entry_stats["filtered_primary_entries"]),
+            "execution_filtered_supplementals": int(filtered_entry_stats["filtered_supplementals"]),
             "win_rate_by_closed_layer": round(float(closed_layer_stats["win_rate_by_closed_layer"]), 6)
             if closed_layer_stats["win_rate_by_closed_layer"] is not None
             else None,
@@ -235,6 +261,50 @@ def _closed_layer_stats(actions_frame: pd.DataFrame) -> dict[str, float | int | 
     }
 
 
+def _filtered_entry_stats(actions_frame: pd.DataFrame) -> dict[str, int]:
+    if actions_frame.empty or "action" not in actions_frame.columns:
+        return {
+            "filtered_entries": 0,
+            "filtered_primary_entries": 0,
+            "filtered_supplementals": 0,
+        }
+
+    filtered = actions_frame.loc[actions_frame["action"] == ActionType.ENTRY_FILTERED.value].copy()
+    if filtered.empty:
+        return {
+            "filtered_entries": 0,
+            "filtered_primary_entries": 0,
+            "filtered_supplementals": 0,
+        }
+
+    if "kind" in filtered.columns:
+        kinds = filtered["kind"].fillna("").astype(str)
+    else:
+        kinds = pd.Series(dtype=str)
+    return {
+        "filtered_entries": int(len(filtered)),
+        "filtered_primary_entries": int((kinds == "PRIMARY").sum()),
+        "filtered_supplementals": int((kinds == "SUPPLEMENTAL").sum()),
+    }
+
+
+def _paper_spread_penalty_stats(actions_frame: pd.DataFrame, config: CorridorConfig) -> dict[str, float]:
+    round_trip = 0.0
+    per_side = 0.0
+    if config.paper_spread_gate_enabled and config.paper_spread_gate_mode == "tax":
+        round_trip = max(0.0, float(config.paper_spread_gate_total_spread) - float(config.max_acceptable_option_spread))
+        per_side = round_trip / 2.0
+    if actions_frame.empty:
+        return {"per_side": per_side, "round_trip": round_trip, "dollars": 0.0}
+
+    dollars = 0.0
+    for column in ["paper_spread_entry_penalty", "paper_spread_close_penalty"]:
+        if column not in actions_frame.columns:
+            continue
+        dollars += float(actions_frame[column].fillna(0.0).sum()) * config.option_multiplier * config.contracts_per_layer
+    return {"per_side": per_side, "round_trip": round_trip, "dollars": dollars}
+
+
 def _modeled_risk_stats(config: CorridorConfig, actions_frame: pd.DataFrame, equity: pd.DataFrame) -> dict[str, float | str]:
     stable_peak = float(equity["modeled_capital_at_risk"].max()) if not equity.empty else 0.0
     execution_peak = stable_peak
@@ -246,7 +316,7 @@ def _modeled_risk_stats(config: CorridorConfig, actions_frame: pd.DataFrame, equ
             execution_peak_layers = int(stable_peak_rows["active_layers"].max())
 
     if actions_frame.empty:
-        close_friction = config.slippage + (config.commission_per_contract * 4.0) / float(config.option_multiplier)
+        close_friction = _modeled_close_friction_per_layer(config)
         close_reserve = execution_peak_layers * close_friction
         return {
             "max_modeled_state_capital_at_risk": stable_peak,
@@ -308,7 +378,7 @@ def _modeled_risk_stats(config: CorridorConfig, actions_frame: pd.DataFrame, equ
         for layer_id, entry_cost in bucket_opens:
             active_open_costs[layer_id] = entry_cost
 
-    close_friction = config.slippage + (config.commission_per_contract * 4.0) / float(config.option_multiplier)
+    close_friction = _modeled_close_friction_per_layer(config)
     close_reserve = conservative_peak_layers * close_friction
     return {
         "max_modeled_state_capital_at_risk": stable_peak,
@@ -330,26 +400,52 @@ def _action_opens_layer(row: Any) -> bool:
 def _action_closes_layer(row: Any) -> bool:
     action = getattr(row, "action", "")
     detail = getattr(row, "detail", "") or ""
-    return action in {ActionType.SESSION_FLUSH.value, ActionType.ABORTED.value} or (
+    return action in {
+        ActionType.SESSION_FLUSH.value,
+        ActionType.ABORTED.value,
+        ActionType.STOP_LOSS.value,
+        ActionType.TAKE_PROFIT.value,
+    } or (
         action == ActionType.REBUILT.value and isinstance(detail, str) and detail.startswith("Removed")
     )
+
+
+def _modeled_close_friction_per_layer(config: CorridorConfig) -> float:
+    slippage_contracts = 4.0
+    if config.wing_mode in {"broken_upper", "broken_lower", "adaptive"} and float(config.broken_wing_extra_width) > 0:
+        slippage_contracts = 5.0
+    slippage_cost = float(config.per_contract_slippage) * slippage_contracts * float(config.stress_slippage_multiplier)
+    commission_cost = (float(config.commission_per_contract) * 4.0) / float(config.option_multiplier)
+    return slippage_cost + commission_cost
 
 
 def _base_summary(config: CorridorConfig, definitions: dict[str, str]) -> dict[str, Any]:
     return {
         "symbol": config.symbol,
         "timeframe": config.timeframe,
+        "wing_mode": config.wing_mode,
+        "broken_wing_extra_width": round(float(config.broken_wing_extra_width), 4),
         "total_return": 0.0,
         "total_return_units": "modeled_points",
+        "stress_profile": config.stress_profile,
+        "stress_entry_debit_multiplier": round(float(config.stress_entry_debit_multiplier), 4),
+        "stress_peak_value_multiplier": round(float(config.stress_peak_value_multiplier), 4),
+        "stress_residual_floor_multiplier": round(float(config.stress_residual_floor_multiplier), 4),
+        "stress_slippage_multiplier": round(float(config.stress_slippage_multiplier), 4),
+        "stress_close_value_haircut_pct": round(float(config.stress_close_value_haircut_pct), 4),
         "model_points": 0.0,
         "gross_modeled_pnl": 0.0,
         "net_modeled_pnl": 0.0,
         "starting_capital": round(float(config.starting_capital), 4),
         "contracts_per_layer": int(config.contracts_per_layer),
         "option_multiplier": int(config.option_multiplier),
+        "per_contract_slippage": round(float(config.per_contract_slippage), 4),
         "dollar_pnl_per_1_lot": 0.0,
         "gross_dollar_pnl": 0.0,
         "net_dollar_pnl": 0.0,
+        "gross_profit": 0.0,
+        "net_slippage_adjusted_profit": 0.0,
+        "friction_adjustment_dollars": 0.0,
         "max_gross_deployment_dollars": 0.0,
         "max_modeled_state_capital_at_risk": 0.0,
         "max_modeled_state_capital_at_risk_dollars": 0.0,
@@ -383,6 +479,19 @@ def _base_summary(config: CorridorConfig, definitions: dict[str, str]) -> dict[s
         "gross_losers": 0.0,
         "gross_winners_dollars": 0.0,
         "gross_losers_dollars": 0.0,
+        "paper_spread_gate_enabled": bool(config.paper_spread_gate_enabled),
+        "paper_spread_gate_mode": config.paper_spread_gate_mode,
+        "paper_spread_gate_source": config.paper_spread_gate_source,
+        "paper_spread_gate_spread_ratio": round(float(config.paper_spread_gate_spread_ratio), 4),
+        "paper_spread_gate_total_spread": round(float(config.paper_spread_gate_total_spread), 4),
+        "paper_spread_gate_sample_count": int(config.paper_spread_gate_sample_count),
+        "paper_spread_gate_rejection_count": int(config.paper_spread_gate_rejection_count),
+        "paper_spread_penalty_per_side": 0.0,
+        "paper_spread_penalty_round_trip": 0.0,
+        "paper_spread_penalty_dollars": 0.0,
+        "execution_filtered_entries": 0,
+        "execution_filtered_primary_entries": 0,
+        "execution_filtered_supplementals": 0,
         "win_rate_by_closed_layer": None,
         "average_closed_layer_pnl": None,
         "average_winner_pnl": None,
@@ -394,13 +503,25 @@ def _base_summary(config: CorridorConfig, definitions: dict[str, str]) -> dict[s
 
 def _metric_definitions() -> dict[str, str]:
     return {
+        "wing_mode": "Butterfly geometry mode used by the backtest or runner: symmetric, broken_upper, broken_lower, or adaptive.",
+        "broken_wing_extra_width": "Extra width added to the broken side when wing_mode is asymmetric.",
         "total_return": "Backward-compatible alias for net_modeled_pnl; equals final total_equity from the modeled equity curve and is not normalized by capital.",
+        "stress_profile": "Named simplified-pricer stress profile used for the run.",
+        "stress_entry_debit_multiplier": "Multiplier applied to simplified entry debit before entry friction.",
+        "stress_peak_value_multiplier": "Multiplier applied to the simplified peak-value assumption used by mark_to_model.",
+        "stress_residual_floor_multiplier": "Multiplier applied to the simplified residual floor used by mark_to_model.",
+        "stress_slippage_multiplier": "Multiplier applied to modeled slippage inside friction_per_layer.",
+        "stress_close_value_haircut_pct": "Additional percentage haircut applied to close_value after modeled friction.",
         "model_points": "Final net modeled equity in model points; computed as equity_curve.total_equity[-1].",
         "gross_modeled_pnl": "Final modeled equity before modeled friction; computed as equity_curve.gross_total_equity[-1].",
         "net_modeled_pnl": "Final modeled equity after modeled friction; computed as equity_curve.total_equity[-1].",
+        "per_contract_slippage": "Modeled per-contract slippage in option points applied to each open/close action.",
         "dollar_pnl_per_1_lot": "net_modeled_pnl * option_multiplier.",
         "gross_dollar_pnl": "gross_modeled_pnl * option_multiplier * contracts_per_layer.",
         "net_dollar_pnl": "net_modeled_pnl * option_multiplier * contracts_per_layer.",
+        "gross_profit": "Alias of gross_dollar_pnl for quick gross-vs-net comparison in dollars.",
+        "net_slippage_adjusted_profit": "Alias of net_dollar_pnl after modeled commission and slippage adjustments in dollars.",
+        "friction_adjustment_dollars": "gross_dollar_pnl - net_dollar_pnl; total modeled commission/slippage drag in dollars.",
         "max_gross_deployment_dollars": "Peak gross modeled deployment dollars at the conservative execution-time peak before adding close-side friction reserve.",
         "max_modeled_state_capital_at_risk": "Peak stable-state modeled entry cost from equity_curve.modeled_capital_at_risk; excludes intra-timestamp overlap.",
         "max_modeled_execution_capital_at_risk": "Conservative execution-time peak modeled entry cost assuming opens can consume capital before same-timestamp closes release it.",
@@ -414,6 +535,19 @@ def _metric_definitions() -> dict[str, str]:
         "closed_layers": "Count of close actions with realized_pnl metadata.",
         "gross_winners_dollars": "Sum of positive closed-layer realized_pnl values converted to dollars.",
         "gross_losers_dollars": "Absolute sum of negative closed-layer realized_pnl values converted to dollars.",
+        "paper_spread_gate_enabled": "Whether a paper-calibrated spread execution gate was applied to modeled entries in the backtest.",
+        "paper_spread_gate_mode": "How paper diagnostics are applied in the backtest: tax adds extra friction, hard_reject skips entries.",
+        "paper_spread_gate_source": "Source JSON used to calibrate the paper spread execution gate.",
+        "paper_spread_gate_spread_ratio": "Median spread_ratio from sampled paper candidates rejected for spread_too_wide.",
+        "paper_spread_gate_total_spread": "Median total_spread from sampled paper candidates rejected for spread_too_wide.",
+        "paper_spread_gate_sample_count": "Count of sampled spread_too_wide paper candidates used for the execution gate calibration.",
+        "paper_spread_gate_rejection_count": "Reported spread_too_wide rejection count from the paper diagnostics source.",
+        "paper_spread_penalty_per_side": "Additional modeled per-side spread penalty in option points when paper diagnostics mode is tax.",
+        "paper_spread_penalty_round_trip": "Additional modeled round-trip spread penalty in option points when paper diagnostics mode is tax.",
+        "paper_spread_penalty_dollars": "Total paper-calibrated spread penalty dollars applied across entry and close actions in the run.",
+        "execution_filtered_entries": "Count of modeled entries skipped by the paper-calibrated spread gate.",
+        "execution_filtered_primary_entries": "Count of primary-layer modeled entries skipped by the paper-calibrated spread gate.",
+        "execution_filtered_supplementals": "Count of supplemental modeled entries skipped by the paper-calibrated spread gate.",
         "win_rate_by_closed_layer": "winning_layers / closed_layers using realized_pnl > 0 as a winner.",
         "average_closed_layer_pnl": "Mean realized_pnl across all closed layers.",
         "average_winner_pnl": "Mean realized_pnl across closed layers with realized_pnl > 0.",

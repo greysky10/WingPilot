@@ -7,12 +7,13 @@ from typing import Optional
 
 import pandas as pd
 
+from corridor.data.ib_contracts import build_underlying_contract
+
 
 try:
-    from ib_insync import IB, Stock, util
+    from ib_insync import IB, util
 except ImportError:  # pragma: no cover - exercised only when ib_insync is missing
     IB = None
-    Stock = None
     util = None
 
 
@@ -33,7 +34,7 @@ class IBHistoricalRequest:
 
 
 def _require_ib() -> None:
-    if IB is None or Stock is None or util is None:
+    if IB is None or util is None:
         raise RuntimeError("ib_insync is required for IB data loading. Install it or use --bars-csv.")
 
 
@@ -61,6 +62,20 @@ def _ensure_utc_timestamp(value: Optional[pd.Timestamp]) -> Optional[pd.Timestam
     return ts.tz_convert("UTC")
 
 
+def _format_ib_history_error(errors: list[tuple[int, str]], context: str) -> str:
+    if not errors:
+        return f"IB returned no historical bars for {context}."
+
+    code, message = errors[-1]
+    cleaned = message.strip()
+    if code == 162 and "different IP address" in cleaned:
+        return (
+            f"IB historical bars unavailable for {context}: {cleaned} "
+            "Close the other trading TWS/Gateway session or reconnect from the same IP."
+        )
+    return f"IB historical bars unavailable for {context}: [{code}] {cleaned}"
+
+
 def fetch_intraday_bars(req: IBHistoricalRequest) -> pd.DataFrame:
     """Fetch IBKR historical bars in backwards chunks and return a normalized frame."""
 
@@ -70,7 +85,7 @@ def fetch_intraday_bars(req: IBHistoricalRequest) -> pd.DataFrame:
     end = _ensure_utc_timestamp(req.end) if req.end is not None else now_utc
     start = _ensure_utc_timestamp(req.start) if req.start is not None else end - pd.Timedelta(days=30)
     chunk_span = _duration_to_timedelta(req.chunk_duration)
-    contract = Stock(req.symbol.upper(), req.exchange, req.currency)
+    contract = build_underlying_contract(req.symbol.upper(), req.exchange, req.currency)
 
     ib = IB()
     ib.connect(req.host, req.port, clientId=req.client_id, timeout=10)
@@ -82,20 +97,45 @@ def fetch_intraday_bars(req: IBHistoricalRequest) -> pd.DataFrame:
 
         while cursor > start:
             request_counter += 1
-            bars = ib.reqHistoricalData(
-                contract,
-                endDateTime=cursor.to_pydatetime(),
-                durationStr=req.chunk_duration,
-                barSizeSetting=req.bar_size,
-                whatToShow=req.what_to_show,
-                useRTH=req.use_rth,
-                formatDate=1,
-            )
+            errors: list[tuple[int, str]] = []
+
+            def capture_error(_req_id: int, error_code: int, error_string: str, error_contract) -> None:
+                if error_contract is None or getattr(error_contract, "symbol", None) == req.symbol.upper():
+                    errors.append((error_code, error_string))
+
+            ib.errorEvent += capture_error
+            try:
+                bars = ib.reqHistoricalData(
+                    contract,
+                    endDateTime=cursor.to_pydatetime(),
+                    durationStr=req.chunk_duration,
+                    barSizeSetting=req.bar_size,
+                    whatToShow=req.what_to_show,
+                    useRTH=req.use_rth,
+                    formatDate=1,
+                )
+            finally:
+                ib.errorEvent -= capture_error
+
             if not bars:
+                if not frames:
+                    raise RuntimeError(
+                        _format_ib_history_error(
+                            errors,
+                            f"{req.symbol.upper()} ({req.chunk_duration}, {req.bar_size})",
+                        )
+                    )
                 break
 
             frame = util.df(bars)
-            if frame.empty:
+            if frame is None or frame.empty:
+                if not frames:
+                    raise RuntimeError(
+                        _format_ib_history_error(
+                            errors,
+                            f"{req.symbol.upper()} ({req.chunk_duration}, {req.bar_size})",
+                        )
+                    )
                 break
 
             frame["timestamp"] = pd.to_datetime(frame["date"], utc=True)

@@ -29,6 +29,7 @@ class CenterEstimator:
             return None
 
         window = history.tail(self.config.center_lookback).copy()
+        atr_window = history.tail(max(2, self.config.atr_lookback)).copy()
         typical = (window["high"] + window["low"] + window["close"]) / 3.0
         timestamp = pd.Timestamp(window["timestamp"].iloc[-1])
 
@@ -51,7 +52,8 @@ class CenterEstimator:
 
         center = round_center(raw_center, self.config.center_rounding)
         band_half = self.config.coverage_band_width / 2.0
-        tol_half = self.config.center_tolerance
+        atr = self._atr(atr_window)
+        tol_half = max(float(self.config.center_tolerance), atr * float(self.config.center_tolerance_atr_multiplier))
         dispersion = float(typical.std(ddof=0)) if len(typical) > 1 else 0.0
         confidence = 0.0 if band_half <= 0 else max(0.0, 1.0 - min(1.0, dispersion / max(1e-6, band_half)))
 
@@ -68,5 +70,18 @@ class CenterEstimator:
                 "raw_center": raw_center,
                 "dispersion": dispersion,
                 "typical_last": float(typical.iloc[-1]),
+                "atr": atr,
+                "actual_tolerance": tol_half,
             },
         )
+
+    @staticmethod
+    def _atr(window: pd.DataFrame) -> float:
+        if window.empty:
+            return 0.0
+        prior_close = window["close"].shift(1)
+        high_low = window["high"] - window["low"]
+        high_close = (window["high"] - prior_close).abs()
+        low_close = (window["low"] - prior_close).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        return float(true_range.fillna(high_low).mean()) if not true_range.empty else 0.0

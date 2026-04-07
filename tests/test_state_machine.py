@@ -73,6 +73,66 @@ class CorridorStateMachineTests(unittest.TestCase):
         self.machine.process_bar("SPY", self.base_ts + pd.Timedelta(minutes=5), 107.0, trend_snapshot, self.center)
         self.assertEqual(self.machine.context.state, CorridorState.ABORT)
 
+    def test_idle_entry_respects_stricter_primary_filters(self) -> None:
+        cfg = CorridorConfig(
+            center_tolerance=2.0,
+            recenter_threshold=4.0,
+            drift_persistence_bars=2,
+            rebuild_cooldown_minutes=0,
+            max_active_butterfly_layers=1,
+            primary_entry_min_center_confidence=0.95,
+            primary_entry_max_momentum_pct=0.0005,
+            primary_entry_max_volume_ratio=1.1,
+            primary_entry_end="10:00",
+        )
+        machine = CorridorStateMachine(cfg)
+        center = CenterEstimate(
+            timestamp=self.base_ts,
+            center_price=100.0,
+            lower_band=94.0,
+            upper_band=106.0,
+            tolerance_low=98.0,
+            tolerance_high=102.0,
+            method=CenterMethod.VWAP,
+            confidence=0.90,
+        )
+        range_snapshot = RegimeSnapshot(self.base_ts, Regime.RANGE, 0.01, 0.0, 0.001, 1.2, False, False)
+        step = machine.process_bar("SPY", self.base_ts, 100.0, range_snapshot, center)
+        self.assertEqual(machine.context.state, CorridorState.IDLE)
+        self.assertEqual(len(step.actions), 0)
+
+    def test_idle_entry_respects_event_day_block(self) -> None:
+        cfg = CorridorConfig(
+            center_tolerance=2.0,
+            recenter_threshold=4.0,
+            drift_persistence_bars=2,
+            rebuild_cooldown_minutes=0,
+            max_active_butterfly_layers=1,
+            skip_event_days=True,
+            event_dates=("2025-01-02",),
+        )
+        machine = CorridorStateMachine(cfg)
+        range_snapshot = RegimeSnapshot(self.base_ts, Regime.RANGE, 0.01, 0.0, 0.0, 1.0, False, False)
+        step = machine.process_bar("SPY", self.base_ts, 100.0, range_snapshot, self.center)
+        self.assertEqual(machine.context.state, CorridorState.IDLE)
+        self.assertEqual(len(step.actions), 0)
+
+    def test_broken_upper_entry_creates_asymmetric_strikes(self) -> None:
+        cfg = CorridorConfig(
+            butterfly_width=30.0,
+            wing_mode="broken_upper",
+            broken_wing_extra_width=20.0,
+            max_active_butterfly_layers=1,
+        )
+        machine = CorridorStateMachine(cfg)
+        range_snapshot = RegimeSnapshot(self.base_ts, Regime.RANGE, 0.01, 0.0, 0.0, 1.0, False, False)
+        machine.process_bar("SPY", self.base_ts, 100.0, range_snapshot, self.center)
+        layer = machine.context.active_layers[0]
+        self.assertEqual(layer.lower_width, 30.0)
+        self.assertEqual(layer.upper_width, 50.0)
+        self.assertEqual(layer.lower_strike, 70.0)
+        self.assertEqual(layer.upper_strike, 150.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,7 @@ class CorridorStateMachine:
         self.rules = RecenterRuleEngine(config)
         self.start_time = _parse_time(config.valid_trading_start)
         self.end_time = _parse_time(config.valid_trading_end)
+        self.primary_entry_end_time = _parse_time(config.primary_entry_end)
 
     def process_bar(
         self,
@@ -84,7 +85,7 @@ class CorridorStateMachine:
             ctx.state = CorridorState.IDLE
 
         if ctx.state == CorridorState.IDLE:
-            if in_window and regime is not None and regime.regime == Regime.RANGE and center is not None:
+            if in_window and self._primary_entry_allowed(local, regime, center):
                 layer = self._open_layer(timestamp, center.center_price, LayerKind.PRIMARY, self.config.default_dte)
                 ctx.active_layers = [layer]
                 ctx.current_center = center.center_price
@@ -244,17 +245,27 @@ class CorridorStateMachine:
         ctx = self.context
         rounded_center = round(center_price / self.config.center_rounding) * self.config.center_rounding
         width = self.config.butterfly_width
+        extra_width = max(0.0, float(self.config.broken_wing_extra_width))
+        lower_width = width
+        upper_width = width
+        if self.config.wing_mode == "broken_upper":
+            upper_width = width + extra_width
+        elif self.config.wing_mode == "broken_lower":
+            lower_width = width + extra_width
         layer = ActiveButterfly(
             layer_id=ctx.next_layer_id,
             kind=kind,
             center_price=rounded_center,
             width=width,
-            lower_strike=rounded_center - width,
+            lower_width=lower_width,
+            upper_width=upper_width,
+            lower_strike=rounded_center - lower_width,
             body_strike=rounded_center,
-            upper_strike=rounded_center + width,
+            upper_strike=rounded_center + upper_width,
             created_at=timestamp,
             dte=dte,
         )
+        layer.metadata["wing_mode"] = self.config.wing_mode
         ctx.next_layer_id += 1
         return layer
 
@@ -265,12 +276,16 @@ class CorridorStateMachine:
         price: float,
         action_type: ActionType,
         detail: str,
+        extra_metadata: Optional[dict[str, float | str]] = None,
     ) -> list[ActionRecord]:
         ctx = self.context
         actions: list[ActionRecord] = []
         for layer in ctx.active_layers:
             layer.closed_at = timestamp
             layer.exit_reason = detail
+            metadata = self._layer_metadata(layer)
+            if extra_metadata:
+                metadata.update(extra_metadata)
             actions.append(
                 ActionRecord(
                     timestamp=timestamp,
@@ -281,11 +296,35 @@ class CorridorStateMachine:
                     center_price=ctx.current_center,
                     layer_id=layer.layer_id,
                     detail=detail,
-                    metadata=self._layer_metadata(layer),
+                    metadata=metadata,
                 )
             )
         ctx.active_layers = []
         return actions
+
+    def flatten_positions(
+        self,
+        symbol: str,
+        timestamp: pd.Timestamp,
+        price: float,
+        action_type: ActionType,
+        detail: str,
+        regime: Optional[RegimeSnapshot],
+        extra_metadata: Optional[dict[str, float | str]] = None,
+    ) -> CorridorStepResult:
+        ctx = self.context
+        if not ctx.active_layers:
+            return CorridorStepResult(transitions=[], actions=[])
+
+        transitions: list[TransitionRecord] = []
+        if ctx.state != CorridorState.IDLE:
+            transitions.append(self._transition(symbol, timestamp, CorridorState.IDLE, detail, regime, price))
+
+        actions = self._close_all_layers(symbol, timestamp, price, action_type, detail, extra_metadata=extra_metadata)
+        ctx.state = CorridorState.IDLE
+        ctx.drift_count = 0
+        ctx.current_center = None
+        return CorridorStepResult(transitions=transitions, actions=actions)
 
     def _should_add_supplemental_layer(self, price: float, center: CenterEstimate) -> bool:
         if self.config.max_active_butterfly_layers <= 1:
@@ -293,7 +332,46 @@ class CorridorStateMachine:
         if not self.context.active_layers:
             return False
         edge_distance = abs(price - center.center_price)
-        return self.config.center_tolerance * 0.6 < edge_distance <= self.config.coverage_band_width / 2.0
+        return center.actual_tolerance * 0.6 < edge_distance <= self.config.coverage_band_width / 2.0
+
+    def _primary_entry_allowed(
+        self,
+        local_ts: pd.Timestamp,
+        regime: Optional[RegimeSnapshot],
+        center: Optional[CenterEstimate],
+    ) -> bool:
+        if regime is None or center is None:
+            return False
+        if regime.regime != Regime.RANGE:
+            return False
+        if self._is_event_day(local_ts):
+            return False
+        local_time = local_ts.timetz().replace(tzinfo=None)
+        if local_time > self.primary_entry_end_time:
+            return False
+        if center.confidence < self.config.primary_entry_min_center_confidence:
+            return False
+        if abs(regime.momentum_pct) > self.config.primary_entry_max_momentum_pct:
+            return False
+        if regime.volume_ratio > self.config.primary_entry_max_volume_ratio:
+            return False
+        if regime.breakout_up or regime.breakout_down:
+            return False
+        return True
+
+    def _is_event_day(self, local_ts: pd.Timestamp) -> bool:
+        if not self.config.skip_event_days or not self.config.event_dates:
+            return False
+        current_date = local_ts.date()
+        for value in self.config.event_dates:
+            parsed = pd.Timestamp(value)
+            if parsed.tzinfo is None:
+                event_date = parsed.tz_localize("America/New_York").date()
+            else:
+                event_date = parsed.tz_convert("America/New_York").date()
+            if event_date == current_date:
+                return True
+        return False
 
     @staticmethod
     def _layer_metadata(layer: ActiveButterfly) -> dict[str, float | str]:
@@ -304,5 +382,8 @@ class CorridorStateMachine:
             "body_strike": round(layer.body_strike, 4),
             "upper_strike": round(layer.upper_strike, 4),
             "width": round(layer.width, 4),
+            "lower_width": round(layer.lower_width, 4),
+            "upper_width": round(layer.upper_width, 4),
+            "wing_mode": str(layer.metadata.get("wing_mode", "symmetric")),
             "dte": layer.dte,
         }
