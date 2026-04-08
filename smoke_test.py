@@ -27,7 +27,7 @@ class StepResult:
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the corridor framework smoke-test sequence.")
     parser.add_argument("--symbol", default="SPY", help="Ticker symbol.")
-    parser.add_argument("--bars-csv", default="my_bars.csv", help="Intraday bars CSV used for local smoke runs.")
+    parser.add_argument("--bars-csv", default="data/samples/my_bars.csv", help="Intraday bars CSV used for local smoke runs.")
     parser.add_argument("--center-method", default="vwap", help="Center estimator passed to the runners.")
     parser.add_argument("--output-root", default="", help="Optional directory for smoke-test outputs.")
     parser.add_argument("--with-ib", action="store_true", help="Also run an IB delayed live-prep smoke test.")

@@ -1,6 +1,6 @@
 {
-  "report_timestamp": "2026-04-07T20:04:30.709853+00:00",
-  "report_date": "2026-04-07",
+  "report_timestamp": "2026-04-08T05:56:43.724671+00:00",
+  "report_date": "2026-04-08",
   "symbol": "SPX",
   "overall_status": "WARN",
   "headline": "Paper day is mixed; some checks need review.",
@@ -8,7 +8,7 @@
   "latest_state": "IDLE",
   "latest_regime": "RANGE",
   "execution_mode": "paper",
-  "startup_mode": "warmup_only",
+  "startup_mode": "history_seeded",
   "filled_orders_today": 0,
   "open_positions_count": 0,
   "avg_open_fill_edge_vs_quote_dollars": null,
@@ -17,110 +17,110 @@
   "adaptive_fallback_rate": 0.0,
   "candidate_diagnostics": {
     "target_body": 6585.0,
-    "available_quotes": 81,
-    "expiries_considered": 3,
-    "call_bodies_considered": 27,
-    "attempted_structures": 27,
+    "available_quotes": 75,
+    "expiries_considered": 5,
+    "call_bodies_considered": 25,
+    "attempted_structures": 25,
     "rejection_counts": {
       "missing_legs": 0,
-      "non_positive_debit": 0,
-      "spread_too_wide": 27
+      "non_positive_debit": 5,
+      "spread_too_wide": 20
     },
     "sample_rejections": [
-      {
-        "expiry": "20260413",
-        "body_strike": 6565.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 3.55,
-        "total_spread": 3.5,
-        "spread_ratio": 0.9859,
-        "lower_strike": 6515.0,
-        "upper_strike": 6615.0
-      },
-      {
-        "expiry": "20260413",
-        "body_strike": 6570.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 3.55,
-        "total_spread": 3.3,
-        "spread_ratio": 0.9296,
-        "lower_strike": 6520.0,
-        "upper_strike": 6620.0
-      },
       {
         "expiry": "20260413",
         "body_strike": 6575.0,
         "wing_mode": "symmetric",
         "reason": "spread_too_wide",
-        "net_debit": 3.55,
-        "total_spread": 3.5,
-        "spread_ratio": 0.9859,
-        "lower_strike": 6525.0,
-        "upper_strike": 6625.0
+        "net_debit": 3.6,
+        "total_spread": 78.4,
+        "spread_ratio": 21.7778,
+        "lower_strike": 6495.0,
+        "upper_strike": 6655.0
       },
       {
         "expiry": "20260413",
         "body_strike": 6580.0,
         "wing_mode": "symmetric",
         "reason": "spread_too_wide",
-        "net_debit": 3.65,
-        "total_spread": 3.5,
-        "spread_ratio": 0.9589,
-        "lower_strike": 6530.0,
-        "upper_strike": 6630.0
+        "net_debit": 4.05,
+        "total_spread": 79.5,
+        "spread_ratio": 19.6296,
+        "lower_strike": 6500.0,
+        "upper_strike": 6660.0
       },
       {
         "expiry": "20260413",
         "body_strike": 6585.0,
         "wing_mode": "symmetric",
         "reason": "spread_too_wide",
-        "net_debit": 3.75,
-        "total_spread": 3.3,
-        "spread_ratio": 0.88,
-        "lower_strike": 6535.0,
-        "upper_strike": 6635.0
+        "net_debit": 1.85,
+        "total_spread": 76.9,
+        "spread_ratio": 41.5676,
+        "lower_strike": 6505.0,
+        "upper_strike": 6665.0
       },
       {
         "expiry": "20260413",
         "body_strike": 6590.0,
         "wing_mode": "symmetric",
         "reason": "spread_too_wide",
-        "net_debit": 3.8,
-        "total_spread": 3.2,
-        "spread_ratio": 0.8421,
-        "lower_strike": 6540.0,
-        "upper_strike": 6640.0
+        "net_debit": 4.15,
+        "total_spread": 70.7,
+        "spread_ratio": 17.0361,
+        "lower_strike": 6510.0,
+        "upper_strike": 6670.0
       },
       {
         "expiry": "20260413",
         "body_strike": 6595.0,
         "wing_mode": "symmetric",
         "reason": "spread_too_wide",
-        "net_debit": 3.85,
-        "total_spread": 3.3,
-        "spread_ratio": 0.8571,
-        "lower_strike": 6545.0,
-        "upper_strike": 6645.0
+        "net_debit": 5.25,
+        "total_spread": 69.7,
+        "spread_ratio": 13.2762,
+        "lower_strike": 6515.0,
+        "upper_strike": 6675.0
       },
       {
-        "expiry": "20260413",
-        "body_strike": 6600.0,
+        "expiry": "20260414",
+        "body_strike": 6575.0,
         "wing_mode": "symmetric",
         "reason": "spread_too_wide",
-        "net_debit": 3.85,
-        "total_spread": 3.3,
-        "spread_ratio": 0.8571,
-        "lower_strike": 6550.0,
-        "upper_strike": 6650.0
+        "net_debit": 4.25,
+        "total_spread": 80.1,
+        "spread_ratio": 18.8471,
+        "lower_strike": 6495.0,
+        "upper_strike": 6655.0
+      },
+      {
+        "expiry": "20260414",
+        "body_strike": 6580.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 5.5,
+        "total_spread": 79.4,
+        "spread_ratio": 14.4364,
+        "lower_strike": 6500.0,
+        "upper_strike": 6660.0
+      },
+      {
+        "expiry": "20260414",
+        "body_strike": 6585.0,
+        "wing_mode": "symmetric",
+        "reason": "spread_too_wide",
+        "net_debit": 7.2,
+        "total_spread": 72.4,
+        "spread_ratio": 10.0556,
+        "lower_strike": 6505.0,
+        "upper_strike": 6665.0
       }
     ]
   },
   "checks": {
     "startup": {
-      "status": "WARN",
-      "message": "Model ready, but warmup/history state is not ideal."
+      "status": "PASS",
+      "message": "History seeded and model ready."
     },
     "runner": {
       "status": "PASS",
@@ -144,10 +144,10 @@
     },
     "diagnostics": {
       "status": "WARN",
-      "message": "Top candidate rejection: spread_too_wide=27."
+      "message": "Top candidate rejection: spread_too_wide=20."
     }
   },
-  "pass_count": 3,
-  "warn_count": 4,
+  "pass_count": 4,
+  "warn_count": 3,
   "fail_count": 0
 }

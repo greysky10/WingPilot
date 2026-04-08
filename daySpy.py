@@ -1,14 +1,7 @@
 #! python3.12
-"""
-Compatibility entrypoint for the DaySpy live IB runner.
+"""Compatibility entrypoint for the archived DaySpy live runner."""
 
-Primary modules:
-- strategy.py: shared signal logic and bar-processing pipeline
-- live_ib.py: IB live runner
-- backtest.py: historical replay runner
-"""
-
-from live_ib import main
+from legacy.daySpy import main
 
 
 if __name__ == "__main__":
