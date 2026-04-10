@@ -42,6 +42,9 @@ class CorridorConfig:
     abort_momentum_threshold: float = 0.01
     primary_stop_loss_pct: float = 0.0
     primary_take_profit_pct: float = 0.0
+    hold_overnight: bool = False
+    max_hold_sessions: int = 0
+    close_when_dte_lte: int = 0
     dte_min: int = 4
     dte_max: int = 10
     default_dte: int = 7
@@ -54,6 +57,8 @@ class CorridorConfig:
     contracts_per_layer: int = 1
     option_multiplier: int = 100
     payoff_mode: str = "simplified"
+    synthetic_chain_state_path: str = ""
+    synthetic_chain_report_path: str = ""
     simplified_entry_debit_pct_of_width: float = 0.22
     simplified_peak_value_pct_of_width: float = 0.85
     simplified_residual_floor_pct: float = 0.05

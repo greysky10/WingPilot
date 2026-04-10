@@ -62,13 +62,32 @@ class CorridorStateMachine:
             local = timestamp.tz_localize("UTC").tz_convert("America/New_York")
         in_window = self.start_time <= local.time() <= self.end_time
 
-        if not in_window and ctx.state in {CorridorState.ACTIVE_CENTERED, CorridorState.DRIFTING, CorridorState.REBUILD}:
-            transitions.append(self._transition(symbol, timestamp, CorridorState.IDLE, "Outside valid trading window.", regime, price))
-            actions.extend(self._close_all_layers(symbol, timestamp, price, ActionType.SESSION_FLUSH, "Session window closed."))
-            ctx.state = CorridorState.IDLE
-            ctx.drift_count = 0
-            ctx.current_center = None
-            return CorridorStepResult(transitions=transitions, actions=actions)
+        if not in_window:
+            if self.config.hold_overnight and ctx.active_layers:
+                if ctx.state != CorridorState.ACTIVE_CENTERED:
+                    transitions.append(
+                        self._transition(
+                            symbol,
+                            timestamp,
+                            CorridorState.ACTIVE_CENTERED,
+                            "Holding active positions overnight outside the trading window.",
+                            regime,
+                            price,
+                        )
+                    )
+                ctx.state = CorridorState.ACTIVE_CENTERED
+                ctx.drift_count = 0
+                if center is not None:
+                    ctx.current_center = center.center_price
+                return CorridorStepResult(transitions=transitions, actions=actions)
+
+            if ctx.state in {CorridorState.ACTIVE_CENTERED, CorridorState.DRIFTING, CorridorState.REBUILD}:
+                transitions.append(self._transition(symbol, timestamp, CorridorState.IDLE, "Outside valid trading window.", regime, price))
+                actions.extend(self._close_all_layers(symbol, timestamp, price, ActionType.SESSION_FLUSH, "Session window closed."))
+                ctx.state = CorridorState.IDLE
+                ctx.drift_count = 0
+                ctx.current_center = None
+                return CorridorStepResult(transitions=transitions, actions=actions)
 
         assessment = self.rules.evaluate(timestamp, price, center, regime, ctx.drift_count, ctx.last_rebuild_at)
         if assessment.should_abort and ctx.state != CorridorState.ABORT:

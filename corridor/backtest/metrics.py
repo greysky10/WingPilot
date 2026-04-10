@@ -405,6 +405,7 @@ def _action_closes_layer(row: Any) -> bool:
         ActionType.ABORTED.value,
         ActionType.STOP_LOSS.value,
         ActionType.TAKE_PROFIT.value,
+        ActionType.MAX_HOLD.value,
     } or (
         action == ActionType.REBUILT.value and isinstance(detail, str) and detail.startswith("Removed")
     )
@@ -423,8 +424,11 @@ def _base_summary(config: CorridorConfig, definitions: dict[str, str]) -> dict[s
     return {
         "symbol": config.symbol,
         "timeframe": config.timeframe,
+        "payoff_mode": config.payoff_mode,
         "wing_mode": config.wing_mode,
         "broken_wing_extra_width": round(float(config.broken_wing_extra_width), 4),
+        "synthetic_chain_state_path": config.synthetic_chain_state_path,
+        "synthetic_chain_report_path": config.synthetic_chain_report_path,
         "total_return": 0.0,
         "total_return_units": "modeled_points",
         "stress_profile": config.stress_profile,
@@ -504,7 +508,10 @@ def _base_summary(config: CorridorConfig, definitions: dict[str, str]) -> dict[s
 def _metric_definitions() -> dict[str, str]:
     return {
         "wing_mode": "Butterfly geometry mode used by the backtest or runner: symmetric, broken_upper, broken_lower, or adaptive.",
+        "payoff_mode": "Pricing mode used by the backtest: underlying_only, simplified, or synthetic_chain.",
         "broken_wing_extra_width": "Extra width added to the broken side when wing_mode is asymmetric.",
+        "synthetic_chain_state_path": "paper_state.json used to calibrate synthetic_chain pricing and accepted-candidate debit/spread anchors.",
+        "synthetic_chain_report_path": "paper_daily_report.json used to calibrate synthetic_chain spread stress from current live-paper diagnostics.",
         "total_return": "Backward-compatible alias for net_modeled_pnl; equals final total_equity from the modeled equity curve and is not normalized by capital.",
         "stress_profile": "Named simplified-pricer stress profile used for the run.",
         "stress_entry_debit_multiplier": "Multiplier applied to simplified entry debit before entry friction.",

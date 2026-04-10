@@ -56,6 +56,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--primary-entry-max-volume-ratio", type=float, default=999.0, help="Maximum volume_ratio allowed for a new primary layer.")
     parser.add_argument("--primary-stop-loss-pct", type=float, default=0.0, help="Close all active butterflies if the primary layer falls below this return threshold.")
     parser.add_argument("--primary-take-profit-pct", type=float, default=0.0, help="Close all active butterflies if the primary layer rises above this return threshold.")
+    parser.add_argument("--hold-overnight", action="store_true", help="Do not force-flatten active positions at the session end; resume them on the next sync-on-start run.")
+    parser.add_argument("--max-hold-sessions", type=int, default=0, help="Close the primary position after this many trading sessions. Set 0 to disable.")
+    parser.add_argument("--close-when-dte-lte", type=int, default=0, help="Close the primary position when its remaining calendar DTE is less than or equal to this threshold. Set 0 to disable.")
     parser.add_argument("--skip-event-days", action="store_true", help="Block new primary entries on configured event dates.")
     parser.add_argument("--event-dates", default="", help="Comma-separated New York dates to block, for example 2026-04-10,2026-05-06.")
     parser.add_argument("--max-spread-pct-of-debit", type=float, default=0.40, help="Maximum allowed total_spread / net_debit ratio for paper execution.")
@@ -104,6 +107,9 @@ def build_configs(args: argparse.Namespace) -> tuple[CorridorConfig, PaperRunner
         primary_entry_max_volume_ratio=max(0.0, float(args.primary_entry_max_volume_ratio)),
         primary_stop_loss_pct=max(0.0, float(args.primary_stop_loss_pct)),
         primary_take_profit_pct=max(0.0, float(args.primary_take_profit_pct)),
+        hold_overnight=bool(args.hold_overnight),
+        max_hold_sessions=max(0, int(args.max_hold_sessions)),
+        close_when_dte_lte=max(0, int(args.close_when_dte_lte)),
         skip_event_days=bool(args.skip_event_days),
         event_dates=tuple(
             item.strip()

@@ -1,0 +1,19 @@
+{
+  "config": {
+    "coverage_band_width": 200.0,
+    "center_tolerance": 15.0,
+    "center_tolerance_atr_multiplier": 1.0
+  },
+  "range_band_hold_rate": {
+    "15m": {
+      "samples": 14590,
+      "tolerance_band_hold_rate": 0.6067169294037011,
+      "major_band_hold_rate": 0.9980808773132283
+    },
+    "30m": {
+      "samples": 14587,
+      "tolerance_band_hold_rate": 0.5094947556043052,
+      "major_band_hold_rate": 0.9952697607458696
+    }
+  }
+}

@@ -247,6 +247,10 @@ def _format_optional_dollar(value: Optional[float]) -> str:
     return f"${value:.2f}"
 
 
+def _format_signed_dollar(value: float) -> str:
+    return f"${value:+.2f}"
+
+
 def _make_check(status: str, message: str) -> dict[str, str]:
     return {"status": status, "message": message}
 
@@ -261,6 +265,8 @@ def build_paper_test_summary(state_payload: dict[str, Any], daily_report_payload
     candidate_error = str(daily_report_payload.get("candidate_error") or "").strip()
     filled_orders = int(daily_report_payload.get("filled_orders_today") or 0)
     blocked_or_skipped = int(daily_report_payload.get("blocked_or_skipped_orders_today") or 0)
+    skipped_orders = int(daily_report_payload.get("skipped_orders_today") or 0)
+    execution_failure_orders = int(daily_report_payload.get("execution_failure_orders_today") or 0)
     open_positions_count = int(daily_report_payload.get("open_positions_count") or 0)
     candidate_diagnostics = daily_report_payload.get("candidate_diagnostics") or {}
     rejection_counts = candidate_diagnostics.get("rejection_counts") if isinstance(candidate_diagnostics, dict) else {}
@@ -321,39 +327,65 @@ def build_paper_test_summary(state_payload: dict[str, Any], daily_report_payload
     else:
         checks["spread"] = _make_check("FAIL", f"Average filled spread ratio is too wide at {spread_ratio:.4f}.")
 
+    configured_wing_mode = str(
+        daily_report_payload.get("configured_wing_mode")
+        or state_payload.get("configured_wing_mode")
+        or ""
+    ).strip()
     fallback_rate = float(daily_report_payload.get("adaptive_fallback_rate") or 0.0)
     fallback_dist = daily_report_payload.get("fallback_type_distribution") or {}
     fallback_counts = fallback_dist.get("counts") if isinstance(fallback_dist, dict) else {}
     broken_upper = int((fallback_counts or {}).get("broken_upper", 0))
     broken_lower = int((fallback_counts or {}).get("broken_lower", 0))
-    if fallback_rate <= 0.35:
-        adaptive_status = "PASS"
-    elif fallback_rate <= 0.60:
-        adaptive_status = "WARN"
+    if configured_wing_mode and configured_wing_mode != "adaptive":
+        checks["adaptive"] = _make_check(
+            "PASS",
+            f"Adaptive fallback not applicable because configured wing_mode={configured_wing_mode}.",
+        )
     else:
-        adaptive_status = "FAIL"
-    checks["adaptive"] = _make_check(
-        adaptive_status,
-        (
-            f"Adaptive fallback rate {fallback_rate:.2%} "
-            f"(broken_upper={broken_upper}, broken_lower={broken_lower})."
-        ),
-    )
+        if fallback_rate <= 0.35:
+            adaptive_status = "PASS"
+        elif fallback_rate <= 0.60:
+            adaptive_status = "WARN"
+        else:
+            adaptive_status = "FAIL"
+        checks["adaptive"] = _make_check(
+            adaptive_status,
+            (
+                f"Adaptive fallback rate {fallback_rate:.2%} "
+                f"(broken_upper={broken_upper}, broken_lower={broken_lower})."
+            ),
+        )
 
-    if blocked_or_skipped == 0:
+    if execution_failure_orders == 0 and blocked_or_skipped == 0:
         checks["orders"] = _make_check(
             "PASS",
             f"Filled orders today={filled_orders}, blocked/skipped={blocked_or_skipped}, open_positions={open_positions_count}.",
         )
-    elif blocked_or_skipped <= 2:
+    elif execution_failure_orders == 0:
         checks["orders"] = _make_check(
             "WARN",
-            f"Filled orders today={filled_orders}, blocked/skipped={blocked_or_skipped}, open_positions={open_positions_count}.",
+            (
+                f"No real execution failures yet; skipped candidate attempts={skipped_orders}, "
+                f"filled={filled_orders}, open_positions={open_positions_count}."
+            ),
+        )
+    elif execution_failure_orders <= 2:
+        checks["orders"] = _make_check(
+            "WARN",
+            (
+                f"Execution failures today={execution_failure_orders}; skipped candidate attempts={skipped_orders}, "
+                f"filled={filled_orders}, open_positions={open_positions_count}."
+            ),
         )
     else:
         checks["orders"] = _make_check(
             "FAIL",
-            f"Too many blocked/skipped orders today={blocked_or_skipped}; filled={filled_orders}, open_positions={open_positions_count}.",
+            (
+                f"Too many real execution failures today={execution_failure_orders}; "
+                f"skipped candidate attempts={skipped_orders}, filled={filled_orders}, "
+                f"open_positions={open_positions_count}."
+            ),
         )
 
     if top_rejection is None:
@@ -726,7 +758,7 @@ class PaperCorridorRunner:
             return
 
         for _, row in self.history.iterrows():
-            self._process_bar(row, allow_orders=False)
+            self._process_bar(row, allow_orders=False, emit_logs=False)
         print(f"Seeded {len(self.history)} completed bars and synced live state from history.")
 
     def poll_once(self) -> None:
@@ -757,8 +789,12 @@ class PaperCorridorRunner:
         if self.last_processed_ts is not None:
             eligible = eligible[eligible["timestamp"] > self.last_processed_ts]
         if eligible.empty:
-            print(f"No new completed bars. | ts={_log_timestamp_now()}")
             self._refresh_positions_from_account()
+            self._retry_pending_session_closes()
+            print(
+                f"No new completed bars. | ts={_log_timestamp_now()}"
+                f"{self._intraday_pnl_log_suffix()}"
+            )
             self._write_state_snapshot()
             return
 
@@ -801,6 +837,100 @@ class PaperCorridorRunner:
     @property
     def required_warmup_bars(self) -> int:
         return max(self.cfg.center_lookback, self.cfg.regime_lookback)
+
+    def _intraday_pnl_log_suffix(self) -> str:
+        realized_dollars = self._today_realized_pnl_dollars()
+        unrealized_dollars = self._open_unrealized_pnl_dollars()
+        total_dollars = realized_dollars + unrealized_dollars
+        return (
+            f" | today_est_pnl={_format_signed_dollar(total_dollars)}"
+            f" | realized={_format_signed_dollar(realized_dollars)}"
+            f" | unrealized={_format_signed_dollar(unrealized_dollars)}"
+            f" | open_positions={len(self.positions)}"
+        )
+
+    def _today_realized_pnl_dollars(self) -> float:
+        local_date_iso = _ensure_utc_timestamp(pd.Timestamp.utcnow()).tz_convert("America/New_York").date().isoformat()
+        orders_today = self._rows_for_local_date(self.logger.paths["orders"], local_date_iso)
+        entry_queues: dict[int, list[tuple[float, int]]] = {}
+        realized_dollars = 0.0
+        for row in orders_today:
+            if row.get("status") != "Filled":
+                continue
+            try:
+                layer_id = int(row.get("layer_id") or 0)
+                quantity = int(row.get("quantity") or 0)
+                fill_price = float(row.get("fill_price") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if layer_id <= 0 or quantity <= 0 or fill_price <= 0:
+                continue
+            side = str(row.get("side") or "").strip().upper()
+            if side == "OPEN":
+                entry_queues.setdefault(layer_id, []).append((fill_price, quantity))
+                continue
+            if side != "CLOSE":
+                continue
+            queue = entry_queues.get(layer_id)
+            if not queue:
+                continue
+            entry_fill_price, entry_quantity = queue.pop(0)
+            matched_quantity = min(quantity, entry_quantity)
+            realized_dollars += (fill_price - entry_fill_price) * 100.0 * matched_quantity
+            remaining_quantity = entry_quantity - matched_quantity
+            if remaining_quantity > 0:
+                queue.insert(0, (entry_fill_price, remaining_quantity))
+        return round(realized_dollars, 2)
+
+    def _open_unrealized_pnl_dollars(self) -> float:
+        unrealized_dollars = 0.0
+        for position in self.positions.values():
+            entry_basis = self._position_entry_basis(position)
+            if entry_basis <= 0:
+                continue
+            live_candidate = self._refresh_candidate_quote(position.candidate)
+            if live_candidate is None:
+                continue
+            position.candidate = live_candidate
+            close_value = self._combo_limit_price(live_candidate, side="SELL")
+            unrealized_dollars += (close_value - entry_basis) * 100.0 * float(position.quantity)
+        return round(unrealized_dollars, 2)
+
+    def _retry_pending_session_closes(self) -> None:
+        if self.cfg.hold_overnight:
+            return
+        if not self.positions or self.execution_halted_reason:
+            return
+        now_utc = _ensure_utc_timestamp(pd.Timestamp.utcnow())
+        local_now = now_utc.tz_convert("America/New_York")
+        if local_now.time() <= self.machine.end_time:
+            return
+        retry_delay_seconds = max(
+            int(self.runner_cfg.poll_seconds),
+            int(math.ceil(float(self.runner_cfg.combo_fill_wait_seconds) * max(1, int(self.runner_cfg.combo_max_chase_steps)))) + 5,
+        )
+        for position in list(self.positions.values()):
+            last_attempt = position.close_requested_at
+            if last_attempt is not None:
+                elapsed = (now_utc - _ensure_utc_timestamp(last_attempt)).total_seconds()
+                if elapsed < retry_delay_seconds:
+                    continue
+            action = ActionRecord(
+                timestamp=now_utc,
+                symbol=self.cfg.symbol,
+                action=ActionType.SESSION_FLUSH,
+                state=CorridorState.IDLE,
+                price=float(self._latest_underlying_price() or 0.0),
+                center_price=float(position.candidate.body_strike),
+                layer_id=position.layer_id,
+                detail="Retrying session flush close for an unfilled paper position.",
+                metadata={"retry_close": True},
+            )
+            print(
+                f"Action | {action.action.value} | layer={action.layer_id} | "
+                f"price={action.price:.2f} | detail={action.detail}"
+            )
+            self._close_position(action)
 
     def _ensure_underlying_ticker(self) -> None:
         if self.market_ticker is not None:
@@ -989,7 +1119,7 @@ class PaperCorridorRunner:
                 f"max_reward={candidate['max_reward']:.2f}"
             )
 
-    def _process_bar(self, row: pd.Series, allow_orders: bool) -> None:
+    def _process_bar(self, row: pd.Series, allow_orders: bool, emit_logs: bool = True) -> None:
         timestamp = pd.Timestamp(row["timestamp"])
         price = float(row["close"])
         regime = self.detector.evaluate(self.history)
@@ -1010,42 +1140,44 @@ class PaperCorridorRunner:
             step = self.machine.process_bar(self.cfg.symbol, timestamp, price, regime, center)
 
         for transition in step.transitions:
-            self.logger.write_transition(
-                {
-                    "timestamp": transition.timestamp.isoformat(),
-                    "symbol": transition.symbol,
-                    "from_state": transition.from_state.value,
-                    "to_state": transition.to_state.value,
-                    "reason": transition.reason,
-                    "regime": transition.regime.value,
-                    "price": round(transition.price, 4),
-                    "center_price": transition.center_price,
-                    "drift_count": transition.drift_count,
-                    "layer_count": transition.layer_count,
-                }
-            )
-            print(
-                f"Transition | {transition.from_state.value} -> {transition.to_state.value} | "
-                f"price={transition.price:.2f} | reason={transition.reason}"
-            )
+            if emit_logs:
+                self.logger.write_transition(
+                    {
+                        "timestamp": transition.timestamp.isoformat(),
+                        "symbol": transition.symbol,
+                        "from_state": transition.from_state.value,
+                        "to_state": transition.to_state.value,
+                        "reason": transition.reason,
+                        "regime": transition.regime.value,
+                        "price": round(transition.price, 4),
+                        "center_price": transition.center_price,
+                        "drift_count": transition.drift_count,
+                        "layer_count": transition.layer_count,
+                    }
+                )
+                print(
+                    f"Transition | {transition.from_state.value} -> {transition.to_state.value} | "
+                    f"price={transition.price:.2f} | reason={transition.reason}"
+                )
 
         for action in step.actions:
-            action_row = {
-                "timestamp": action.timestamp.isoformat(),
-                "symbol": action.symbol,
-                "action": action.action.value,
-                "state": action.state.value,
-                "price": round(action.price, 4),
-                "center_price": action.center_price,
-                "layer_id": action.layer_id,
-                "detail": action.detail,
-                **action.metadata,
-            }
-            self.logger.write_action(action_row)
-            print(
-                f"Action | {action.action.value} | layer={action.layer_id} | "
-                f"price={action.price:.2f} | detail={action.detail}"
-            )
+            if emit_logs:
+                action_row = {
+                    "timestamp": action.timestamp.isoformat(),
+                    "symbol": action.symbol,
+                    "action": action.action.value,
+                    "state": action.state.value,
+                    "price": round(action.price, 4),
+                    "center_price": action.center_price,
+                    "layer_id": action.layer_id,
+                    "detail": action.detail,
+                    **action.metadata,
+                }
+                self.logger.write_action(action_row)
+                print(
+                    f"Action | {action.action.value} | layer={action.layer_id} | "
+                    f"price={action.price:.2f} | detail={action.detail}"
+                )
             if allow_orders:
                 self._handle_action(action, center, regime)
 
@@ -1053,7 +1185,13 @@ class PaperCorridorRunner:
         if action.action in {ActionType.DRIFT_STARTED, ActionType.DRIFT_RESOLVED, ActionType.REBUILD_REQUESTED}:
             return
 
-        if action.action in {ActionType.SESSION_FLUSH, ActionType.ABORTED, ActionType.STOP_LOSS, ActionType.TAKE_PROFIT}:
+        if action.action in {
+            ActionType.SESSION_FLUSH,
+            ActionType.ABORTED,
+            ActionType.STOP_LOSS,
+            ActionType.TAKE_PROFIT,
+            ActionType.MAX_HOLD,
+        }:
             if action.layer_id is not None:
                 self._close_position(action)
             return
@@ -1081,23 +1219,57 @@ class PaperCorridorRunner:
         if primary is None:
             return None
 
-        return_pct = self._position_return_pct(primary)
-        if return_pct is None:
-            return None
-
-        if self.cfg.primary_stop_loss_pct > 0 and return_pct <= -self.cfg.primary_stop_loss_pct:
-            return (
-                ActionType.STOP_LOSS,
-                "Primary stop-loss reached.",
-                {"primary_return_pct": round(return_pct, 4)},
-            )
-        if self.cfg.primary_take_profit_pct > 0 and return_pct >= self.cfg.primary_take_profit_pct:
-            return (
-                ActionType.TAKE_PROFIT,
-                "Primary take-profit reached.",
-                {"primary_return_pct": round(return_pct, 4)},
-            )
+        if self.cfg.primary_stop_loss_pct > 0 or self.cfg.primary_take_profit_pct > 0:
+            return_pct = self._position_return_pct(primary)
+            if return_pct is not None:
+                if self.cfg.primary_stop_loss_pct > 0 and return_pct <= -self.cfg.primary_stop_loss_pct:
+                    return (
+                        ActionType.STOP_LOSS,
+                        "Primary stop-loss reached.",
+                        {"primary_return_pct": round(return_pct, 4)},
+                    )
+                if self.cfg.primary_take_profit_pct > 0 and return_pct >= self.cfg.primary_take_profit_pct:
+                    return (
+                        ActionType.TAKE_PROFIT,
+                        "Primary take-profit reached.",
+                        {"primary_return_pct": round(return_pct, 4)},
+                    )
+        if self.cfg.close_when_dte_lte > 0:
+            remaining_dte = self._remaining_dte_calendar_days(primary, timestamp)
+            if remaining_dte is not None and remaining_dte <= self.cfg.close_when_dte_lte:
+                return (
+                    ActionType.MAX_HOLD,
+                    f"Max-hold DTE threshold reached (remaining_dte={remaining_dte}).",
+                    {"remaining_dte": int(remaining_dte)},
+                )
+        if self.cfg.max_hold_sessions > 0:
+            sessions_held = self._held_session_count(primary, timestamp)
+            if sessions_held >= self.cfg.max_hold_sessions:
+                return (
+                    ActionType.MAX_HOLD,
+                    f"Max-hold session threshold reached (sessions_held={sessions_held}).",
+                    {"sessions_held": int(sessions_held)},
+                )
         return None
+
+    def _remaining_dte_calendar_days(self, position: ManagedPosition, timestamp: pd.Timestamp) -> Optional[int]:
+        expiry = pd.to_datetime(str(position.candidate.expiry), format="%Y%m%d", errors="coerce")
+        if pd.isna(expiry):
+            return None
+        local_ts = _ensure_utc_timestamp(pd.Timestamp(timestamp)).tz_convert("America/New_York")
+        return int((expiry.date() - local_ts.date()).days)
+
+    def _held_session_count(self, position: ManagedPosition, timestamp: pd.Timestamp) -> int:
+        opened_local = _ensure_utc_timestamp(position.opened_at).tz_convert("America/New_York").date()
+        current_local = _ensure_utc_timestamp(pd.Timestamp(timestamp)).tz_convert("America/New_York").date()
+        if current_local < opened_local:
+            return 0
+        if self.history.empty:
+            return 1
+        local_dates = pd.to_datetime(self.history["timestamp"], utc=True).dt.tz_convert("America/New_York").dt.date
+        mask = (local_dates >= opened_local) & (local_dates <= current_local)
+        unique_sessions = int(local_dates[mask].nunique())
+        return unique_sessions if unique_sessions > 0 else 1
 
     def _position_return_pct(self, position: ManagedPosition) -> Optional[float]:
         live_candidate = self._refresh_candidate_quote(position.candidate)
@@ -1132,6 +1304,7 @@ class PaperCorridorRunner:
         if action.layer_id is None or action.layer_id in self.positions:
             return
         if self.execution_halted_reason:
+            self._rollback_unfilled_open(action.layer_id)
             self._log_order(
                 {
                     "timestamp": action.timestamp.isoformat(),
@@ -1150,6 +1323,7 @@ class PaperCorridorRunner:
         target_body = float(action.metadata.get("body_strike") or action.metadata.get("center_price") or action.center_price or 0.0)
         candidate = self._select_candidate(target_body)
         if candidate is None:
+            self._rollback_unfilled_open(action.layer_id)
             self._log_order(
                 {
                     "timestamp": action.timestamp.isoformat(),
@@ -1164,6 +1338,7 @@ class PaperCorridorRunner:
             return
         candidate_issue = self._candidate_execution_issue(candidate)
         if candidate_issue is not None:
+            self._rollback_unfilled_open(action.layer_id)
             self._log_order(
                 {
                     "timestamp": action.timestamp.isoformat(),
@@ -1199,6 +1374,7 @@ class PaperCorridorRunner:
                 failure_reason = self._describe_trade_failure(trade)
                 if fill_audit and fill_audit.get("abort_reason"):
                     failure_reason = str(fill_audit["abort_reason"])
+                self._rollback_unfilled_open(action.layer_id)
                 self._log_order(
                     {
                         "timestamp": action.timestamp.isoformat(),
@@ -1224,9 +1400,10 @@ class PaperCorridorRunner:
                         "reason": failure_reason,
                     }
                 )
-                self._halt_execution(
-                    f"Paper order rejected while opening layer {action.layer_id}: {failure_reason}"
-                )
+                if not self._is_benign_trade_abort(trade, fill_audit, failure_reason):
+                    self._halt_execution(
+                        f"Paper order rejected while opening layer {action.layer_id}: {failure_reason}"
+                    )
                 return
             if not self._trade_is_filled(trade):
                 failure_reason = self._describe_trade_failure(trade)
@@ -1407,7 +1584,8 @@ class PaperCorridorRunner:
             }
         )
         if failure_reason:
-            self._halt_execution(f"Paper close failed for layer {action.layer_id}: {failure_reason}")
+            if not self._is_benign_trade_abort(trade, fill_audit, failure_reason):
+                self._halt_execution(f"Paper close failed for layer {action.layer_id}: {failure_reason}")
             return
         if status.lower() == "filled":
             position.closed_at = action.timestamp
@@ -1651,7 +1829,10 @@ class PaperCorridorRunner:
         max_total_debit_limit: Optional[float],
     ) -> float:
         chase_step = max(0.01, round(candidate.total_spread * self.runner_cfg.combo_chase_fraction_of_spread, 2))
-        max_buffer = max(0.02, round(candidate.total_spread * 0.5, 2))
+        # Let the chase cap expand with the configured aggressiveness instead of
+        # always stopping at half the quoted spread.
+        max_buffer_fraction = self._combo_chase_cap_fraction()
+        max_buffer = max(0.02, round(candidate.total_spread * max_buffer_fraction, 2))
         if side == "BUY":
             cap = round(candidate.net_debit + max_buffer, 2)
             if max_total_debit_limit is not None:
@@ -1659,6 +1840,12 @@ class PaperCorridorRunner:
             return round(min(cap, current_limit + chase_step), 2)
         floor = max(0.01, round(candidate.net_debit - max_buffer, 2))
         return round(max(floor, current_limit - chase_step), 2)
+
+    def _combo_chase_cap_fraction(self) -> float:
+        configured_fraction = max(0.0, float(self.runner_cfg.combo_chase_fraction_of_spread))
+        configured_steps = max(1, int(self.runner_cfg.combo_max_chase_steps))
+        requested_fraction = configured_fraction * configured_steps
+        return min(1.0, max(0.5, requested_fraction))
 
     def _chase_should_abort_from_drift(self, candidate: ButterflyCandidate) -> bool:
         latest_price = self._latest_underlying_price()
@@ -2003,6 +2190,38 @@ class PaperCorridorRunner:
         status = str(getattr(trade.orderStatus, "status", "") or "").strip() or "unknown"
         return f"Order ended in status={status}."
 
+    @staticmethod
+    def _is_benign_trade_abort(trade, fill_audit: Optional[dict[str, Any]], failure_reason: str) -> bool:
+        abort_reason = str((fill_audit or {}).get("abort_reason") or "").strip()
+        if abort_reason in {
+            "chase_window_exhausted",
+            "fill_timeout_abort_center_drift",
+            "max_total_debit_limit_reached",
+        }:
+            return True
+        status = str(getattr(trade.orderStatus, "status", "") or "").strip()
+        if status != "Cancelled":
+            return False
+        normalized_failure_reason = str(failure_reason or "").strip()
+        if normalized_failure_reason and normalized_failure_reason != "Order ended in status=Cancelled.":
+            if "needs to be cancelled is not found" not in normalized_failure_reason:
+                return False
+        for entry in reversed(getattr(trade, "log", []) or []):
+            message = str(getattr(entry, "message", "") or "").strip()
+            error_code = getattr(entry, "errorCode", 0) or 0
+            try:
+                error_code = int(error_code)
+            except (TypeError, ValueError):
+                return False
+            if error_code not in {0, 10147}:
+                return False
+            if message and error_code != 10147:
+                return False
+            if message and error_code == 10147 and "needs to be cancelled is not found" not in message:
+                    return False
+        advanced_error = str(getattr(trade, "advancedError", "") or "").strip()
+        return advanced_error == ""
+
     def _halt_execution(self, reason: str) -> None:
         if self.execution_halted_reason:
             return
@@ -2079,6 +2298,10 @@ class PaperCorridorRunner:
         order_status_counts = Counter(row.get("status", "") for row in orders_today if row.get("status"))
         order_side_counts = Counter(row.get("side", "") for row in orders_today if row.get("side"))
         order_reason_counts = Counter(row.get("reason", "") for row in orders_today if row.get("reason"))
+        skipped_orders_today = sum(1 for row in orders_today if row.get("status") == "skipped")
+        execution_failure_orders_today = sum(
+            1 for row in orders_today if row.get("status") in {"blocked", "Cancelled", "ApiCancelled", "Inactive"}
+        )
 
         open_orders_submitted = sum(
             1 for row in orders_today if row.get("side") == "OPEN" and row.get("status") in {"Filled", "Submitted", "PreSubmitted"}
@@ -2093,6 +2316,7 @@ class PaperCorridorRunner:
             "report_timestamp": now_utc.isoformat(),
             "report_date": report_date,
             "symbol": self.cfg.symbol,
+            "configured_wing_mode": state_payload.get("configured_wing_mode"),
             "execution_mode": state_payload.get("execution_mode"),
             "startup_mode": state_payload.get("startup_mode"),
             "history_seeded": state_payload.get("history_seeded"),
@@ -2131,6 +2355,8 @@ class PaperCorridorRunner:
             "filled_orders_today": sum(1 for row in orders_today if row.get("status") == "Filled"),
             "filled_open_orders_today": len(filled_open_orders),
             "filled_close_orders_today": len(filled_close_orders),
+            "skipped_orders_today": skipped_orders_today,
+            "execution_failure_orders_today": execution_failure_orders_today,
             "blocked_or_skipped_orders_today": sum(
                 1 for row in orders_today if row.get("status") in {"blocked", "skipped"}
             ),
@@ -2326,6 +2552,7 @@ class PaperCorridorRunner:
             ],
             "execution_mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
             "execution_halted_reason": self.execution_halted_reason,
+            "configured_wing_mode": self.cfg.wing_mode,
             "wing_stats": dict(self.wing_stats),
             "candidates": candidates,
             "candidate_status": candidate_status,

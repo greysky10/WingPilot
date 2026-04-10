@@ -21,6 +21,44 @@ from corridor.strategy.regime import RangeRegimeDetector
 from strategy import load_local_env
 
 
+def build_levels_payload(frame: pd.DataFrame, cfg: CorridorConfig, center, regime) -> dict:
+    regime_window = frame.tail(max(8, cfg.regime_lookback)).copy()
+    prior_high = float(regime_window["high"].iloc[:-1].max()) if len(regime_window) > 1 else float(regime_window["high"].iloc[-1])
+    prior_low = float(regime_window["low"].iloc[:-1].min()) if len(regime_window) > 1 else float(regime_window["low"].iloc[-1])
+    breakout_up_trigger = prior_high * (1.0 + cfg.breakout_buffer_pct)
+    breakout_down_trigger = prior_low * (1.0 - cfg.breakout_buffer_pct)
+
+    if center is None:
+        return {
+            "pivot": None,
+            "support_near": None,
+            "support_major": None,
+            "resistance_near": None,
+            "resistance_major": None,
+            "breakout_up_trigger": breakout_up_trigger,
+            "breakout_down_trigger": breakout_down_trigger,
+            "prior_high": prior_high,
+            "prior_low": prior_low,
+        }
+
+    return {
+        "pivot": center.center_price,
+        "support_near": center.tolerance_low,
+        "support_major": center.lower_band,
+        "resistance_near": center.tolerance_high,
+        "resistance_major": center.upper_band,
+        "breakout_up_trigger": breakout_up_trigger,
+        "breakout_down_trigger": breakout_down_trigger,
+        "prior_high": prior_high,
+        "prior_low": prior_low,
+        "center_confidence": center.confidence,
+        "atr": center.diagnostics.get("atr"),
+        "dispersion": center.diagnostics.get("dispersion"),
+        "actual_tolerance": center.actual_tolerance,
+        "regime": regime.regime.value if regime is not None else None,
+    }
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare a live corridor snapshot and candidate butterflies.")
     parser.add_argument("--symbol", default="SPX", help="Ticker symbol.")
@@ -77,6 +115,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     regime = detector.evaluate(frame)
     center = estimator.estimate(frame)
     latest = frame.iloc[-1]
+    levels = build_levels_payload(frame, cfg, center, regime)
 
     payload = {
         "symbol": cfg.symbol,
@@ -84,11 +123,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         "price": float(latest["close"]),
         "mode": args.mode,
         "regime": regime.regime.value if regime is not None else None,
+        "regime_snapshot": {
+            "trend_bias": regime.regime.value if regime is not None else None,
+            "trend_slope_pct": regime.trend_slope_pct if regime is not None else None,
+            "momentum_pct": regime.momentum_pct if regime is not None else None,
+            "volume_ratio": regime.volume_ratio if regime is not None else None,
+            "range_width_pct": regime.range_width_pct if regime is not None else None,
+            "breakout_up": regime.breakout_up if regime is not None else None,
+            "breakout_down": regime.breakout_down if regime is not None else None,
+        },
         "center": center.center_price if center is not None else None,
         "center_band": {
             "lower": center.lower_band if center is not None else None,
             "upper": center.upper_band if center is not None else None,
         },
+        "tolerance_band": {
+            "lower": center.tolerance_low if center is not None else None,
+            "upper": center.tolerance_high if center is not None else None,
+        },
+        "levels": levels,
         "candidates": [],
     }
 
@@ -122,7 +175,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     print(f"Live prep saved to {output_path}")
-    print(f"Regime={payload['regime']} | center={payload['center']} | candidates={len(payload['candidates'])}")
+    print(
+        f"Regime={payload['regime']} | "
+        f"center={payload['center']} | "
+        f"support={levels['support_near']} | "
+        f"resistance={levels['resistance_near']} | "
+        f"candidates={len(payload['candidates'])}"
+    )
     return 0
 
 

@@ -40,6 +40,7 @@ class ActionType(str, Enum):
     ABORTED = "ABORTED"
     STOP_LOSS = "STOP_LOSS"
     TAKE_PROFIT = "TAKE_PROFIT"
+    MAX_HOLD = "MAX_HOLD"
     SESSION_FLUSH = "SESSION_FLUSH"
     LIVE_PREP = "LIVE_PREP"
 

@@ -9,6 +9,7 @@ from corridor.backtest.metrics import compute_metrics
 from corridor.config import CorridorConfig
 from corridor.models import ActionRecord, ActionType, ActiveButterfly, CorridorState, EquityPoint, Regime
 from corridor.options.butterfly_pricer import SimplifiedButterflyPricer
+from corridor.options.synthetic_chain import SyntheticChainButterflyPricer
 from corridor.strategy.center_estimator import CenterEstimator
 from corridor.strategy.corridor_state_machine import CorridorStateMachine
 from corridor.strategy.regime import RangeRegimeDetector
@@ -30,7 +31,12 @@ class CorridorBacktestEngine:
         self.detector = RangeRegimeDetector(config)
         self.center_estimator = CenterEstimator(config)
         self.state_machine = CorridorStateMachine(config)
-        self.pricer = SimplifiedButterflyPricer(config) if config.payoff_mode == "simplified" else None
+        if config.payoff_mode == "simplified":
+            self.pricer = SimplifiedButterflyPricer(config)
+        elif config.payoff_mode == "synthetic_chain":
+            self.pricer = SyntheticChainButterflyPricer.from_config(config)
+        else:
+            self.pricer = None
 
     def run(self, frame: pd.DataFrame) -> BacktestResult:
         frame = frame.sort_values("timestamp").reset_index(drop=True)
@@ -49,7 +55,7 @@ class CorridorBacktestEngine:
             center = self.center_estimator.estimate(history)
 
             prior_layers = {layer.layer_id: layer for layer in self.state_machine.context.active_layers}
-            protective_exit = self._protective_exit_signal(timestamp, price)
+            protective_exit = self._protective_exit_signal(timestamp, price, history)
             if protective_exit is not None:
                 action_type, detail, extra_metadata = protective_exit
                 step = self.state_machine.flatten_positions(
@@ -76,6 +82,19 @@ class CorridorBacktestEngine:
                 and self.config.paper_spread_gate_mode == "hard_reject"
             ):
                 opened_ids = self._apply_paper_spread_gate(
+                    symbol,
+                    timestamp,
+                    price,
+                    step.actions,
+                    step.transitions,
+                    current_layers,
+                    opened_ids,
+                )
+                current_layers = {layer.layer_id: layer for layer in self.state_machine.context.active_layers}
+                closed_ids = sorted(set(prior_layers) - set(current_layers))
+
+            if self.pricer is not None and opened_ids and self.config.payoff_mode == "synthetic_chain":
+                opened_ids = self._apply_synthetic_chain_gate(
                     symbol,
                     timestamp,
                     price,
@@ -209,6 +228,7 @@ class CorridorBacktestEngine:
         self,
         timestamp: pd.Timestamp,
         price: float,
+        history: pd.DataFrame,
     ) -> tuple[ActionType, str, dict[str, float | str]] | None:
         if self.pricer is None:
             return None
@@ -234,7 +254,53 @@ class CorridorBacktestEngine:
                 "Primary take-profit reached.",
                 {"primary_return_pct": round(return_pct, 4)},
             )
+        if self.config.close_when_dte_lte > 0:
+            remaining_dte = self._remaining_dte_calendar_days(primary, timestamp)
+            if remaining_dte <= self.config.close_when_dte_lte:
+                return (
+                    ActionType.MAX_HOLD,
+                    f"Max-hold DTE threshold reached (remaining_dte={remaining_dte}).",
+                    {"remaining_dte": int(remaining_dte)},
+                )
+        if self.config.max_hold_sessions > 0:
+            sessions_held = self._held_session_count(primary, timestamp, history)
+            if sessions_held >= self.config.max_hold_sessions:
+                return (
+                    ActionType.MAX_HOLD,
+                    f"Max-hold session threshold reached (sessions_held={sessions_held}).",
+                    {"sessions_held": int(sessions_held)},
+                )
         return None
+
+    @staticmethod
+    def _remaining_dte_calendar_days(layer: ActiveButterfly, timestamp: pd.Timestamp) -> int:
+        opened_local = pd.Timestamp(layer.created_at)
+        if opened_local.tzinfo is None:
+            opened_local = opened_local.tz_localize("UTC")
+        opened_local = opened_local.tz_convert("America/New_York")
+        current_local = pd.Timestamp(timestamp)
+        if current_local.tzinfo is None:
+            current_local = current_local.tz_localize("UTC")
+        current_local = current_local.tz_convert("America/New_York")
+        elapsed = max(0, int((current_local.date() - opened_local.date()).days))
+        return int(layer.dte) - elapsed
+
+    @staticmethod
+    def _held_session_count(layer: ActiveButterfly, timestamp: pd.Timestamp, history: pd.DataFrame) -> int:
+        opened_local = pd.Timestamp(layer.created_at)
+        if opened_local.tzinfo is None:
+            opened_local = opened_local.tz_localize("UTC")
+        opened_local_date = opened_local.tz_convert("America/New_York").date()
+        current_local = pd.Timestamp(timestamp)
+        if current_local.tzinfo is None:
+            current_local = current_local.tz_localize("UTC")
+        current_local_date = current_local.tz_convert("America/New_York").date()
+        if current_local_date < opened_local_date:
+            return 0
+        local_dates = pd.to_datetime(history["timestamp"], utc=True).dt.tz_convert("America/New_York").dt.date
+        mask = (local_dates >= opened_local_date) & (local_dates <= current_local_date)
+        unique_sessions = int(local_dates[mask].nunique())
+        return unique_sessions if unique_sessions > 0 else 1
 
     def _apply_paper_spread_gate(
         self,
@@ -288,6 +354,61 @@ class CorridorBacktestEngine:
                     center_price=self.state_machine.context.current_center,
                     layer_id=layer.layer_id,
                     detail="Paper-calibrated spread gate rejected the modeled entry.",
+                    metadata=metadata,
+                )
+            )
+        return kept_ids
+
+    def _apply_synthetic_chain_gate(
+        self,
+        symbol: str,
+        timestamp: pd.Timestamp,
+        price: float,
+        actions: list[ActionRecord],
+        transitions: list,
+        current_layers: dict[int, ActiveButterfly],
+        opened_ids: list[int],
+    ) -> list[int]:
+        if not isinstance(self.pricer, SyntheticChainButterflyPricer):
+            return opened_ids
+
+        kept_ids: list[int] = []
+        for layer_id in opened_ids:
+            layer = current_layers.get(layer_id)
+            if layer is None:
+                continue
+            estimated_spread = self.pricer.estimated_total_spread(layer)
+            if estimated_spread <= float(self.config.max_acceptable_option_spread):
+                kept_ids.append(layer_id)
+                continue
+
+            source_action = self._pop_open_action(actions, layer_id)
+            self.state_machine.context.active_layers = [
+                active for active in self.state_machine.context.active_layers if active.layer_id != layer_id
+            ]
+            self._rollback_filtered_entry_state(source_action, transitions)
+            metadata = self._layer_metadata(layer)
+            metadata.update(
+                {
+                    "source_action": source_action.action.value if source_action is not None else "UNKNOWN",
+                    "entry_debit_estimate": round(self.pricer.entry_debit(layer), 4),
+                    "estimated_total_spread": round(estimated_spread, 4),
+                    "estimated_spread_ratio": round(self.pricer.estimated_spread_ratio(layer), 4),
+                    "max_acceptable_option_spread": round(float(self.config.max_acceptable_option_spread), 4),
+                    "synthetic_chain_state_path": self.config.synthetic_chain_state_path,
+                    "synthetic_chain_report_path": self.config.synthetic_chain_report_path,
+                }
+            )
+            actions.append(
+                ActionRecord(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    action=ActionType.ENTRY_FILTERED,
+                    state=self.state_machine.context.state,
+                    price=price,
+                    center_price=self.state_machine.context.current_center,
+                    layer_id=layer.layer_id,
+                    detail="Synthetic chain spread gate rejected the modeled entry.",
                     metadata=metadata,
                 )
             )

@@ -1,119 +1,71 @@
 {
-  "report_timestamp": "2026-04-08T05:56:43.724671+00:00",
-  "report_date": "2026-04-08",
+  "report_timestamp": "2026-04-09T19:58:21.508428+00:00",
+  "report_date": "2026-04-09",
   "symbol": "SPX",
-  "overall_status": "WARN",
-  "headline": "Paper day is mixed; some checks need review.",
-  "suggested_action": "Paper test is usable, but review the warning fields before considering live capital.",
+  "overall_status": "FAIL",
+  "headline": "Paper day failed one or more hard checks.",
+  "suggested_action": "Do not promote this setup. Fix the failing execution or quality checks first.",
   "latest_state": "IDLE",
   "latest_regime": "RANGE",
   "execution_mode": "paper",
   "startup_mode": "history_seeded",
-  "filled_orders_today": 0,
+  "filled_orders_today": 2,
   "open_positions_count": 0,
   "avg_open_fill_edge_vs_quote_dollars": null,
   "avg_close_fill_edge_vs_quote_dollars": null,
   "avg_filled_spread_ratio": null,
-  "adaptive_fallback_rate": 0.0,
+  "adaptive_fallback_rate": 1.0,
   "candidate_diagnostics": {
-    "target_body": 6585.0,
-    "available_quotes": 75,
+    "target_body": 6825.0,
+    "available_quotes": 91,
     "expiries_considered": 5,
     "call_bodies_considered": 25,
     "attempted_structures": 25,
     "rejection_counts": {
-      "missing_legs": 0,
-      "non_positive_debit": 5,
-      "spread_too_wide": 20
+      "missing_legs": 3,
+      "non_positive_debit": 0,
+      "spread_too_wide": 2
     },
     "sample_rejections": [
       {
-        "expiry": "20260413",
-        "body_strike": 6575.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 3.6,
-        "total_spread": 78.4,
-        "spread_ratio": 21.7778,
-        "lower_strike": 6495.0,
-        "upper_strike": 6655.0
-      },
-      {
-        "expiry": "20260413",
-        "body_strike": 6580.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 4.05,
-        "total_spread": 79.5,
-        "spread_ratio": 19.6296,
-        "lower_strike": 6500.0,
-        "upper_strike": 6660.0
-      },
-      {
-        "expiry": "20260413",
-        "body_strike": 6585.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 1.85,
-        "total_spread": 76.9,
-        "spread_ratio": 41.5676,
-        "lower_strike": 6505.0,
-        "upper_strike": 6665.0
-      },
-      {
-        "expiry": "20260413",
-        "body_strike": 6590.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 4.15,
-        "total_spread": 70.7,
-        "spread_ratio": 17.0361,
-        "lower_strike": 6510.0,
-        "upper_strike": 6670.0
-      },
-      {
-        "expiry": "20260413",
-        "body_strike": 6595.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 5.25,
-        "total_spread": 69.7,
-        "spread_ratio": 13.2762,
-        "lower_strike": 6515.0,
-        "upper_strike": 6675.0
-      },
-      {
         "expiry": "20260414",
-        "body_strike": 6575.0,
-        "wing_mode": "symmetric",
+        "body_strike": 6815.0,
+        "wing_mode": "broken_upper",
         "reason": "spread_too_wide",
-        "net_debit": 4.25,
-        "total_spread": 80.1,
-        "spread_ratio": 18.8471,
-        "lower_strike": 6495.0,
-        "upper_strike": 6655.0
+        "net_debit": 32.05,
+        "total_spread": 14.7,
+        "spread_ratio": 0.4587,
+        "lower_strike": 6715.0,
+        "upper_strike": 6935.0
       },
       {
-        "expiry": "20260414",
-        "body_strike": 6580.0,
-        "wing_mode": "symmetric",
+        "expiry": "20260415",
+        "body_strike": 6815.0,
+        "wing_mode": "broken_upper",
         "reason": "spread_too_wide",
-        "net_debit": 5.5,
-        "total_spread": 79.4,
-        "spread_ratio": 14.4364,
-        "lower_strike": 6500.0,
-        "upper_strike": 6660.0
+        "net_debit": 27.75,
+        "total_spread": 13.5,
+        "spread_ratio": 0.4865,
+        "lower_strike": 6715.0,
+        "upper_strike": 6935.0
       },
       {
-        "expiry": "20260414",
-        "body_strike": 6585.0,
-        "wing_mode": "symmetric",
-        "reason": "spread_too_wide",
-        "net_debit": 7.2,
-        "total_spread": 72.4,
-        "spread_ratio": 10.0556,
-        "lower_strike": 6505.0,
-        "upper_strike": 6665.0
+        "expiry": "20260416",
+        "body_strike": 6815.0,
+        "wing_mode": "broken_upper",
+        "reason": "missing_legs"
+      },
+      {
+        "expiry": "20260416",
+        "body_strike": 6825.0,
+        "wing_mode": "broken_upper",
+        "reason": "missing_legs"
+      },
+      {
+        "expiry": "20260416",
+        "body_strike": 6835.0,
+        "wing_mode": "broken_upper",
+        "reason": "missing_legs"
       }
     ]
   },
@@ -136,18 +88,18 @@
     },
     "adaptive": {
       "status": "PASS",
-      "message": "Adaptive fallback rate 0.00% (broken_upper=0, broken_lower=0)."
+      "message": "Adaptive fallback not applicable because configured wing_mode=broken_upper."
     },
     "orders": {
-      "status": "PASS",
-      "message": "Filled orders today=0, blocked/skipped=0, open_positions=0."
+      "status": "FAIL",
+      "message": "Too many real execution failures today=7; skipped candidate attempts=3, filled=2, open_positions=0."
     },
     "diagnostics": {
       "status": "WARN",
-      "message": "Top candidate rejection: spread_too_wide=20."
+      "message": "Top candidate rejection: missing_legs=3."
     }
   },
-  "pass_count": 4,
+  "pass_count": 3,
   "warn_count": 3,
-  "fail_count": 0
+  "fail_count": 1
 }

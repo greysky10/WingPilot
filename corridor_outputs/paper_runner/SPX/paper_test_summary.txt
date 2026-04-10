@@ -1,10 +1,10 @@
-Paper Test Summary | WARN | 2026-04-08 | SPX
-Headline: Paper day is mixed; some checks need review. State=IDLE Regime=RANGE Startup=history_seeded
+Paper Test Summary | FAIL | 2026-04-09 | SPX
+Headline: Paper day failed one or more hard checks. State=IDLE Regime=RANGE Startup=history_seeded
 Startup: PASS | History seeded and model ready.
 Runner: PASS | Runner is operating without a recorded execution halt.
 Fills: WARN | No filled orders yet today; fill quality is not evaluated.
 Spread: WARN | No filled orders yet; spread quality is not evaluated.
-Adaptive: PASS | Adaptive fallback rate 0.00% (broken_upper=0, broken_lower=0).
-Orders: PASS | Filled orders today=0, blocked/skipped=0, open_positions=0.
-Diagnostics: WARN | Top candidate rejection: spread_too_wide=20.
-Action: Paper test is usable, but review the warning fields before considering live capital.
+Adaptive: PASS | Adaptive fallback not applicable because configured wing_mode=broken_upper.
+Orders: FAIL | Too many real execution failures today=7; skipped candidate attempts=3, filled=2, open_positions=0.
+Diagnostics: WARN | Top candidate rejection: missing_legs=3.
+Action: Do not promote this setup. Fix the failing execution or quality checks first.

@@ -40,8 +40,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--payoff-mode",
         default="underlying_only",
-        choices=["underlying_only", "simplified"],
-        help="Use underlying-only decision logging or the simplified butterfly payoff model.",
+        choices=["underlying_only", "simplified", "synthetic_chain"],
+        help="Use underlying-only decision logging, the simplified butterfly payoff model, or a synthetic chain model calibrated from current live-paper SPXW quotes.",
     )
     parser.add_argument("--output-dir", default="", help="Optional output directory.")
     parser.add_argument("--client-id", type=int, default=41, help="IB client id when fetching from IBKR.")
@@ -79,6 +79,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--event-dates", default="", help="Comma-separated New York dates to block, for example 2026-04-10,2026-05-06.")
     parser.add_argument("--primary-stop-loss-pct", type=float, default=0.0, help="Protective stop-loss threshold for the primary layer, measured as a fraction of entry cost.")
     parser.add_argument("--primary-take-profit-pct", type=float, default=0.0, help="Take-profit threshold for the primary layer, measured as a fraction of entry cost.")
+    parser.add_argument("--hold-overnight", action="store_true", help="Do not force session-end flattening in the state machine.")
+    parser.add_argument("--max-hold-sessions", type=int, default=0, help="Close the primary position after this many trading sessions. Set 0 to disable.")
+    parser.add_argument("--close-when-dte-lte", type=int, default=0, help="Close the primary position when remaining calendar DTE is less than or equal to this threshold. Set 0 to disable.")
+    parser.add_argument("--synthetic-chain-state-json", default="", help="Optional paper_state.json used to calibrate synthetic-chain pricing. Defaults to corridor_outputs/paper_runner/<SYMBOL>/paper_state.json.")
+    parser.add_argument("--synthetic-chain-report-json", default="", help="Optional paper_daily_report.json used to calibrate synthetic-chain spread behavior. Defaults to corridor_outputs/paper_runner/<SYMBOL>/paper_daily_report.json.")
     parser.add_argument(
         "--stress-profile",
         default="none",
@@ -129,7 +134,7 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         ),
         primary_stop_loss_pct=max(0.0, float(args.primary_stop_loss_pct)),
         primary_take_profit_pct=max(0.0, float(args.primary_take_profit_pct)),
-        payoff_mode="simplified" if args.payoff_mode == "simplified" else "underlying_only",
+        payoff_mode=str(args.payoff_mode),
         ib_host=os.getenv("IB_HOST", "127.0.0.1"),
         ib_port=int(os.getenv("IB_PORT", "4001")),
         ib_client_id=args.client_id,
@@ -140,6 +145,11 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         per_contract_slippage=max(0.0, float(args.per_contract_slippage)),
         slippage=max(0.0, float(args.per_contract_slippage)),
         stress_profile=args.stress_profile,
+        hold_overnight=bool(args.hold_overnight),
+        max_hold_sessions=max(0, int(args.max_hold_sessions)),
+        close_when_dte_lte=max(0, int(args.close_when_dte_lte)),
+        synthetic_chain_state_path=str(args.synthetic_chain_state_json or ""),
+        synthetic_chain_report_path=str(args.synthetic_chain_report_json or ""),
     )
     _apply_stress_profile(cfg, args.stress_profile)
     if args.paper_diagnostics_json:
@@ -211,9 +221,18 @@ def _extract_candidate_diagnostics(payload: dict) -> dict:
     return {}
 
 
+def _coerce_utc_timestamp(value: Optional[str]) -> Optional[pd.Timestamp]:
+    if not value:
+        return None
+    parsed = pd.Timestamp(value)
+    if parsed.tzinfo is None:
+        return parsed.tz_localize("UTC")
+    return parsed.tz_convert("UTC")
+
+
 def load_frame(cfg: CorridorConfig, args: argparse.Namespace) -> pd.DataFrame:
-    start = pd.Timestamp(args.start, tz="UTC") if args.start else None
-    end = pd.Timestamp(args.end, tz="UTC") if args.end else None
+    start = _coerce_utc_timestamp(args.start)
+    end = _coerce_utc_timestamp(args.end)
     if args.bars_csv:
         return load_intraday_bars(
             HistoricalLoadConfig(

@@ -29,6 +29,15 @@ def _ensure_utc(ts: pd.Series) -> pd.Series:
     return parsed.dt.tz_convert("UTC")
 
 
+def _ensure_boundary_utc(value: Optional[pd.Timestamp]) -> Optional[pd.Timestamp]:
+    if value is None:
+        return None
+    parsed = pd.Timestamp(value)
+    if parsed.tzinfo is None:
+        return parsed.tz_localize("UTC")
+    return parsed.tz_convert("UTC")
+
+
 def load_intraday_bars(cfg: HistoricalLoadConfig) -> pd.DataFrame:
     """Load normalized intraday OHLCV bars from CSV."""
 
@@ -74,12 +83,14 @@ def load_intraday_bars(cfg: HistoricalLoadConfig) -> pd.DataFrame:
 
     frame = frame.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"]).sort_values("timestamp")
 
+    start = _ensure_boundary_utc(cfg.start)
+    end = _ensure_boundary_utc(cfg.end)
     if cfg.symbol:
         frame = frame[frame["symbol"] == cfg.symbol.upper()]
-    if cfg.start is not None:
-        frame = frame[frame["timestamp"] >= pd.Timestamp(cfg.start, tz="UTC")]
-    if cfg.end is not None:
-        frame = frame[frame["timestamp"] <= pd.Timestamp(cfg.end, tz="UTC")]
+    if start is not None:
+        frame = frame[frame["timestamp"] >= start]
+    if end is not None:
+        frame = frame[frame["timestamp"] <= end]
 
     if frame.empty:
         raise ValueError("Historical bars frame is empty after filtering.")

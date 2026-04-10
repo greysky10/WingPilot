@@ -36,8 +36,21 @@ class CorridorEngineProtectiveExitTests(unittest.TestCase):
         layer.entry_friction_cost = engine.pricer.friction_per_layer()
         layer.entry_cost = engine.pricer.entry_cost(layer)
         engine.state_machine.context.active_layers = [layer]
+        history = pd.DataFrame(
+            [
+                {
+                    "timestamp": created_at + pd.Timedelta(days=1),
+                    "symbol": "SPX",
+                    "open": 6400.0,
+                    "high": 6400.0,
+                    "low": 6400.0,
+                    "close": 6400.0,
+                    "volume": 1.0,
+                }
+            ]
+        )
 
-        signal = engine._protective_exit_signal(created_at + pd.Timedelta(days=1), 6400.0)
+        signal = engine._protective_exit_signal(created_at + pd.Timedelta(days=1), 6400.0, history)
         self.assertIsNotNone(signal)
         self.assertEqual(signal[0], ActionType.TAKE_PROFIT)
 
@@ -67,8 +80,21 @@ class CorridorEngineProtectiveExitTests(unittest.TestCase):
         layer.entry_friction_cost = engine.pricer.friction_per_layer()
         layer.entry_cost = engine.pricer.entry_cost(layer)
         engine.state_machine.context.active_layers = [layer]
+        history = pd.DataFrame(
+            [
+                {
+                    "timestamp": created_at + pd.Timedelta(days=1),
+                    "symbol": "SPX",
+                    "open": 6460.0,
+                    "high": 6460.0,
+                    "low": 6460.0,
+                    "close": 6460.0,
+                    "volume": 1.0,
+                }
+            ]
+        )
 
-        signal = engine._protective_exit_signal(created_at + pd.Timedelta(days=1), 6460.0)
+        signal = engine._protective_exit_signal(created_at + pd.Timedelta(days=1), 6460.0, history)
         self.assertIsNotNone(signal)
         self.assertEqual(signal[0], ActionType.STOP_LOSS)
 
