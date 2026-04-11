@@ -1,14 +1,14 @@
 {
-  "timestamp": "2026-04-09T19:50:00+00:00",
+  "timestamp": "2026-04-10T19:55:00+00:00",
   "symbol": "SPX",
-  "price": 6829.77,
+  "price": 6817.9,
   "regime": "RANGE",
-  "center": 6825.0,
+  "center": 6815.0,
   "actual_tolerance": 15.0,
-  "state": "IDLE",
+  "state": "ACTIVE_CENTERED",
   "startup_mode": "history_seeded",
   "history_seeded": true,
-  "history_seed_status": "History seed successful. Loaded 388 completed bars from IB historical data.",
+  "history_seed_status": "History seed successful. Loaded 371 completed bars from IB historical data.",
   "warmup_mode": false,
   "warmup_reason": null,
   "history_refresh_error": null,
@@ -18,156 +18,81 @@
   "warmup_remaining_bars": 0,
   "model_ready": true,
   "partial_bar": null,
-  "open_positions": [],
+  "open_positions": [
+    {
+      "layer_id": 5,
+      "expiry": "20260415",
+      "trading_class": "SPXW",
+      "right": "CALL",
+      "lower_strike": 6710.0,
+      "body_strike": 6830.0,
+      "upper_strike": 6930.0,
+      "layer_kind": "PRIMARY",
+      "quantity": 1,
+      "open_limit": 55.43,
+      "open_fill_price": 55.9,
+      "open_status": "Filled",
+      "source_action": "ENTER_PRIMARY",
+      "close_requested_at": null,
+      "close_limit": null,
+      "close_fill_price": null,
+      "close_status": "",
+      "close_failure_reason": null
+    }
+  ],
   "execution_mode": "paper",
   "execution_halted_reason": null,
-  "configured_wing_mode": "broken_upper",
+  "configured_wing_mode": "broken_lower",
   "wing_stats": {
     "symmetric": 0,
     "broken_upper": 5,
-    "broken_lower": 0,
+    "broken_lower": 1,
     "guard_fails": 0
   },
-  "candidates": [
-    {
-      "expiry": "20260414",
-      "right": "CALL",
-      "wing_mode": "broken_upper",
-      "lower_width": 100.0,
-      "upper_width": 120.0,
-      "lower_strike": 6725.0,
-      "body_strike": 6825.0,
-      "upper_strike": 6945.0,
-      "net_debit": 34.6,
-      "total_spread": 2.2,
-      "spread_ratio": 0.0636,
-      "reward_to_risk": 1.1978,
-      "body_distance": 0.0,
-      "max_risk": 5460.0,
-      "max_reward": 6540.0
-    },
-    {
-      "expiry": "20260415",
-      "right": "CALL",
-      "wing_mode": "broken_upper",
-      "lower_width": 100.0,
-      "upper_width": 120.0,
-      "lower_strike": 6725.0,
-      "body_strike": 6825.0,
-      "upper_strike": 6945.0,
-      "net_debit": 29.45,
-      "total_spread": 2.3,
-      "spread_ratio": 0.0781,
-      "reward_to_risk": 1.4267,
-      "body_distance": 0.0,
-      "max_risk": 4945.0,
-      "max_reward": 7055.0
-    },
-    {
-      "expiry": "20260413",
-      "right": "CALL",
-      "wing_mode": "broken_upper",
-      "lower_width": 100.0,
-      "upper_width": 120.0,
-      "lower_strike": 6725.0,
-      "body_strike": 6825.0,
-      "upper_strike": 6945.0,
-      "net_debit": 40.575,
-      "total_spread": 6.85,
-      "spread_ratio": 0.1688,
-      "reward_to_risk": 0.981,
-      "body_distance": 0.0,
-      "max_risk": 6057.5,
-      "max_reward": 5942.5
-    },
-    {
-      "expiry": "20260417",
-      "right": "CALL",
-      "wing_mode": "broken_upper",
-      "lower_width": 100.0,
-      "upper_width": 120.0,
-      "lower_strike": 6725.0,
-      "body_strike": 6825.0,
-      "upper_strike": 6945.0,
-      "net_debit": 21.25,
-      "total_spread": 3.7,
-      "spread_ratio": 0.1741,
-      "reward_to_risk": 1.9091,
-      "body_distance": 0.0,
-      "max_risk": 4125.0,
-      "max_reward": 7875.0
-    },
-    {
-      "expiry": "20260414",
-      "right": "CALL",
-      "wing_mode": "broken_upper",
-      "lower_width": 100.0,
-      "upper_width": 120.0,
-      "lower_strike": 6730.0,
-      "body_strike": 6830.0,
-      "upper_strike": 6950.0,
-      "net_debit": 35.4,
-      "total_spread": 2.0,
-      "spread_ratio": 0.0565,
-      "reward_to_risk": 1.1661,
-      "body_distance": 5.0,
-      "max_risk": 5540.0,
-      "max_reward": 6460.0
-    }
-  ],
-  "candidate_status": "Loaded 5 candidate butterflies for the current center.",
+  "candidates": [],
+  "candidate_status": "No qualifying butterflies matched the current center and spread filters. Rejections: non_positive_debit=5, missing_legs=0, spread_too_wide=0.",
   "candidate_error": null,
   "candidate_diagnostics": {
-    "target_body": 6825.0,
-    "available_quotes": 91,
-    "expiries_considered": 5,
-    "call_bodies_considered": 25,
-    "attempted_structures": 25,
+    "target_body": 6815.0,
+    "available_quotes": 19,
+    "expiries_considered": 1,
+    "call_bodies_considered": 5,
+    "attempted_structures": 5,
     "rejection_counts": {
-      "missing_legs": 3,
-      "non_positive_debit": 0,
-      "spread_too_wide": 2
+      "missing_legs": 0,
+      "non_positive_debit": 5,
+      "spread_too_wide": 0
     },
     "sample_rejections": [
       {
-        "expiry": "20260414",
-        "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "spread_too_wide",
-        "net_debit": 32.05,
-        "total_spread": 14.7,
-        "spread_ratio": 0.4587,
-        "lower_strike": 6715.0,
-        "upper_strike": 6935.0
+        "expiry": "20260415",
+        "body_strike": 6805.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
+      },
+      {
+        "expiry": "20260415",
+        "body_strike": 6810.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
         "expiry": "20260415",
         "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "spread_too_wide",
-        "net_debit": 27.75,
-        "total_spread": 13.5,
-        "spread_ratio": 0.4865,
-        "lower_strike": 6715.0,
-        "upper_strike": 6935.0
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
-        "expiry": "20260416",
-        "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
+        "expiry": "20260415",
+        "body_strike": 6820.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
-        "expiry": "20260416",
+        "expiry": "20260415",
         "body_strike": 6825.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
-      },
-      {
-        "expiry": "20260416",
-        "body_strike": 6835.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       }
     ]
   },
@@ -175,13 +100,13 @@
   "fallback_type_distribution": {
     "counts": {
       "broken_upper": 5,
-      "broken_lower": 0
+      "broken_lower": 1
     },
     "rates": {
-      "broken_upper": 1.0,
-      "broken_lower": 0.0
+      "broken_upper": 0.8333,
+      "broken_lower": 0.1667
     },
     "guard_fails": 0,
-    "total_selected": 5
+    "total_selected": 6
   }
 }

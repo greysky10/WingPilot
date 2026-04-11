@@ -1,71 +1,61 @@
 {
-  "report_timestamp": "2026-04-09T19:58:21.508428+00:00",
-  "report_date": "2026-04-09",
+  "report_timestamp": "2026-04-10T21:25:48.502024+00:00",
+  "report_date": "2026-04-10",
   "symbol": "SPX",
-  "overall_status": "FAIL",
-  "headline": "Paper day failed one or more hard checks.",
-  "suggested_action": "Do not promote this setup. Fix the failing execution or quality checks first.",
-  "latest_state": "IDLE",
+  "overall_status": "WARN",
+  "headline": "Paper day is mixed; some checks need review.",
+  "suggested_action": "Paper test is usable, but review the warning fields before considering live capital.",
+  "latest_state": "ACTIVE_CENTERED",
   "latest_regime": "RANGE",
   "execution_mode": "paper",
   "startup_mode": "history_seeded",
-  "filled_orders_today": 2,
-  "open_positions_count": 0,
+  "filled_orders_today": 1,
+  "open_positions_count": 1,
   "avg_open_fill_edge_vs_quote_dollars": null,
   "avg_close_fill_edge_vs_quote_dollars": null,
   "avg_filled_spread_ratio": null,
   "adaptive_fallback_rate": 1.0,
   "candidate_diagnostics": {
-    "target_body": 6825.0,
-    "available_quotes": 91,
-    "expiries_considered": 5,
-    "call_bodies_considered": 25,
-    "attempted_structures": 25,
+    "target_body": 6815.0,
+    "available_quotes": 19,
+    "expiries_considered": 1,
+    "call_bodies_considered": 5,
+    "attempted_structures": 5,
     "rejection_counts": {
-      "missing_legs": 3,
-      "non_positive_debit": 0,
-      "spread_too_wide": 2
+      "missing_legs": 0,
+      "non_positive_debit": 5,
+      "spread_too_wide": 0
     },
     "sample_rejections": [
       {
-        "expiry": "20260414",
-        "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "spread_too_wide",
-        "net_debit": 32.05,
-        "total_spread": 14.7,
-        "spread_ratio": 0.4587,
-        "lower_strike": 6715.0,
-        "upper_strike": 6935.0
+        "expiry": "20260415",
+        "body_strike": 6805.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
+      },
+      {
+        "expiry": "20260415",
+        "body_strike": 6810.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
         "expiry": "20260415",
         "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "spread_too_wide",
-        "net_debit": 27.75,
-        "total_spread": 13.5,
-        "spread_ratio": 0.4865,
-        "lower_strike": 6715.0,
-        "upper_strike": 6935.0
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
-        "expiry": "20260416",
-        "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
+        "expiry": "20260415",
+        "body_strike": 6820.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
-        "expiry": "20260416",
+        "expiry": "20260415",
         "body_strike": 6825.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
-      },
-      {
-        "expiry": "20260416",
-        "body_strike": 6835.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       }
     ]
   },
@@ -88,18 +78,18 @@
     },
     "adaptive": {
       "status": "PASS",
-      "message": "Adaptive fallback not applicable because configured wing_mode=broken_upper."
+      "message": "Adaptive fallback not applicable because configured wing_mode=broken_lower."
     },
     "orders": {
-      "status": "FAIL",
-      "message": "Too many real execution failures today=7; skipped candidate attempts=3, filled=2, open_positions=0."
+      "status": "WARN",
+      "message": "No real execution failures yet; skipped candidate attempts=3, filled=1, open_positions=1."
     },
     "diagnostics": {
       "status": "WARN",
-      "message": "Top candidate rejection: missing_legs=3."
+      "message": "Top candidate rejection: non_positive_debit=5."
     }
   },
   "pass_count": 3,
-  "warn_count": 3,
-  "fail_count": 1
+  "warn_count": 4,
+  "fail_count": 0
 }

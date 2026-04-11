@@ -1,137 +1,118 @@
 {
-  "report_timestamp": "2026-04-09T19:58:21.508428+00:00",
-  "report_date": "2026-04-09",
+  "report_timestamp": "2026-04-10T21:25:48.502024+00:00",
+  "report_date": "2026-04-10",
   "symbol": "SPX",
-  "configured_wing_mode": "broken_upper",
+  "configured_wing_mode": "broken_lower",
   "execution_mode": "paper",
   "startup_mode": "history_seeded",
   "history_seeded": true,
-  "history_seed_status": "History seed successful. Loaded 388 completed bars from IB historical data.",
+  "history_seed_status": "History seed successful. Loaded 371 completed bars from IB historical data.",
   "model_ready": true,
   "warmup_mode": false,
   "execution_halted_reason": null,
-  "latest_timestamp": "2026-04-09T19:50:00+00:00",
-  "latest_price": 6829.77,
+  "latest_timestamp": "2026-04-10T19:55:00+00:00",
+  "latest_price": 6817.9,
   "latest_regime": "RANGE",
-  "latest_center": 6825.0,
+  "latest_center": 6815.0,
   "latest_actual_tolerance": 15.0,
-  "latest_state": "IDLE",
+  "latest_state": "ACTIVE_CENTERED",
   "history_bars": 300,
   "warmup_remaining_bars": 0,
-  "candidate_count": 5,
-  "candidate_status": "Loaded 5 candidate butterflies for the current center.",
+  "candidate_count": 0,
+  "candidate_status": "No qualifying butterflies matched the current center and spread filters. Rejections: non_positive_debit=5, missing_legs=0, spread_too_wide=0.",
   "candidate_error": null,
   "candidate_diagnostics": {
-    "target_body": 6825.0,
-    "available_quotes": 91,
-    "expiries_considered": 5,
-    "call_bodies_considered": 25,
-    "attempted_structures": 25,
+    "target_body": 6815.0,
+    "available_quotes": 19,
+    "expiries_considered": 1,
+    "call_bodies_considered": 5,
+    "attempted_structures": 5,
     "rejection_counts": {
-      "missing_legs": 3,
-      "non_positive_debit": 0,
-      "spread_too_wide": 2
+      "missing_legs": 0,
+      "non_positive_debit": 5,
+      "spread_too_wide": 0
     },
     "sample_rejections": [
       {
-        "expiry": "20260414",
-        "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "spread_too_wide",
-        "net_debit": 32.05,
-        "total_spread": 14.7,
-        "spread_ratio": 0.4587,
-        "lower_strike": 6715.0,
-        "upper_strike": 6935.0
+        "expiry": "20260415",
+        "body_strike": 6805.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
+      },
+      {
+        "expiry": "20260415",
+        "body_strike": 6810.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
         "expiry": "20260415",
         "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "spread_too_wide",
-        "net_debit": 27.75,
-        "total_spread": 13.5,
-        "spread_ratio": 0.4865,
-        "lower_strike": 6715.0,
-        "upper_strike": 6935.0
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
-        "expiry": "20260416",
-        "body_strike": 6815.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
+        "expiry": "20260415",
+        "body_strike": 6820.0,
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       },
       {
-        "expiry": "20260416",
+        "expiry": "20260415",
         "body_strike": 6825.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
-      },
-      {
-        "expiry": "20260416",
-        "body_strike": 6835.0,
-        "wing_mode": "broken_upper",
-        "reason": "missing_legs"
+        "wing_mode": "broken_lower",
+        "reason": "non_positive_debit"
       }
     ]
   },
   "wing_stats": {
     "symmetric": 0,
     "broken_upper": 5,
-    "broken_lower": 0,
+    "broken_lower": 1,
     "guard_fails": 0
   },
   "adaptive_fallback_rate": 1.0,
   "fallback_type_distribution": {
     "counts": {
       "broken_upper": 5,
-      "broken_lower": 0
+      "broken_lower": 1
     },
     "rates": {
-      "broken_upper": 1.0,
-      "broken_lower": 0.0
+      "broken_upper": 0.8333,
+      "broken_lower": 0.1667
     },
     "guard_fails": 0,
-    "total_selected": 5
+    "total_selected": 6
   },
-  "open_positions_count": 0,
-  "open_position_bodies": "",
-  "transitions_today_total": 35,
-  "actions_today_total": 36,
-  "orders_today_total": 12,
+  "open_positions_count": 1,
+  "open_position_bodies": "6830.0",
+  "transitions_today_total": 8,
+  "actions_today_total": 8,
+  "orders_today_total": 4,
   "actions_today_by_type": {
-    "DRIFT_RESOLVED": 3,
-    "DRIFT_STARTED": 7,
-    "ENTER_PRIMARY": 11,
-    "REBUILD_REQUESTED": 4,
-    "REBUILT": 8,
-    "SESSION_FLUSH": 3
+    "DRIFT_RESOLVED": 2,
+    "DRIFT_STARTED": 2,
+    "ENTER_PRIMARY": 4
   },
   "orders_today_by_status": {
-    "Cancelled": 6,
-    "Filled": 2,
-    "blocked": 1,
+    "Filled": 1,
     "skipped": 3
   },
   "orders_today_by_side": {
-    "CLOSE": 3,
-    "OPEN": 9
+    "OPEN": 4
   },
   "top_order_reasons_today": {
     "No candidate butterfly matched the corridor center.": 3,
-    "42": 1,
-    "174": 1,
-    "185": 1,
-    "227": 1
+    "1063": 1
   },
   "open_orders_submitted_today": 1,
-  "close_orders_submitted_today": 1,
-  "filled_orders_today": 2,
+  "close_orders_submitted_today": 0,
+  "filled_orders_today": 1,
   "filled_open_orders_today": 1,
-  "filled_close_orders_today": 1,
+  "filled_close_orders_today": 0,
   "skipped_orders_today": 3,
-  "execution_failure_orders_today": 7,
-  "blocked_or_skipped_orders_today": 4,
+  "execution_failure_orders_today": 0,
+  "blocked_or_skipped_orders_today": 3,
   "avg_open_fill_edge_vs_quote": null,
   "avg_open_fill_edge_vs_limit": null,
   "avg_open_limit_vs_quote": null,

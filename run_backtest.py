@@ -54,7 +54,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--wing-mode",
         default="symmetric",
-        choices=["symmetric", "broken_upper", "broken_lower"],
+        choices=["symmetric", "broken_upper", "broken_lower", "adaptive"],
         help="Strike geometry mode for the modeled butterfly.",
     )
     parser.add_argument(
@@ -82,6 +82,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--hold-overnight", action="store_true", help="Do not force session-end flattening in the state machine.")
     parser.add_argument("--max-hold-sessions", type=int, default=0, help="Close the primary position after this many trading sessions. Set 0 to disable.")
     parser.add_argument("--close-when-dte-lte", type=int, default=0, help="Close the primary position when remaining calendar DTE is less than or equal to this threshold. Set 0 to disable.")
+    parser.add_argument("--default-dte", type=int, default=7, help="Modeled DTE attached to newly opened layers in the backtest state machine.")
     parser.add_argument("--synthetic-chain-state-json", default="", help="Optional paper_state.json used to calibrate synthetic-chain pricing. Defaults to corridor_outputs/paper_runner/<SYMBOL>/paper_state.json.")
     parser.add_argument("--synthetic-chain-report-json", default="", help="Optional paper_daily_report.json used to calibrate synthetic-chain spread behavior. Defaults to corridor_outputs/paper_runner/<SYMBOL>/paper_daily_report.json.")
     parser.add_argument(
@@ -148,6 +149,7 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         hold_overnight=bool(args.hold_overnight),
         max_hold_sessions=max(0, int(args.max_hold_sessions)),
         close_when_dte_lte=max(0, int(args.close_when_dte_lte)),
+        default_dte=max(1, int(args.default_dte)),
         synthetic_chain_state_path=str(args.synthetic_chain_state_json or ""),
         synthetic_chain_report_path=str(args.synthetic_chain_report_json or ""),
     )
@@ -293,6 +295,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "Controls | "
         f"wing_mode={cfg.wing_mode} | "
         f"broken_extra={cfg.broken_wing_extra_width:.2f} | "
+        f"default_dte={cfg.default_dte} | "
         f"max_option_spread={cfg.max_acceptable_option_spread:.2f} | "
         f"max_layers={cfg.max_active_butterfly_layers} | "
         f"primary_entry_end={cfg.primary_entry_end} | "

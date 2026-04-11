@@ -75,6 +75,9 @@ class CorridorBacktestEngine:
             opened_ids = sorted(set(current_layers) - set(prior_layers))
             closed_ids = sorted(set(prior_layers) - set(current_layers))
 
+            if self.pricer is not None and opened_ids and self.config.wing_mode == "adaptive":
+                self._apply_adaptive_wing_selection(step.actions, current_layers, opened_ids)
+
             if (
                 self.pricer is not None
                 and opened_ids
@@ -358,6 +361,148 @@ class CorridorBacktestEngine:
                 )
             )
         return kept_ids
+
+    def _apply_adaptive_wing_selection(
+        self,
+        actions: list[ActionRecord],
+        current_layers: dict[int, ActiveButterfly],
+        opened_ids: list[int],
+    ) -> None:
+        if not hasattr(self.pricer, "estimated_total_spread") or not hasattr(self.pricer, "estimated_spread_ratio"):
+            return
+
+        for layer_id in opened_ids:
+            layer = current_layers.get(layer_id)
+            if layer is None:
+                continue
+            chosen_layer, selection = self._select_adaptive_layer_variant(layer)
+            if chosen_layer is None:
+                continue
+            self._copy_layer_geometry(layer, chosen_layer)
+            layer.metadata.update(selection)
+            self._enrich_action(
+                actions,
+                layer_id,
+                lower_strike=round(layer.lower_strike, 4),
+                body_strike=round(layer.body_strike, 4),
+                upper_strike=round(layer.upper_strike, 4),
+                width=round(layer.width, 4),
+                lower_width=round(layer.lower_width, 4),
+                upper_width=round(layer.upper_width, 4),
+                wing_mode=str(layer.metadata.get("wing_mode", "symmetric")),
+                adaptive_selected_wing=str(layer.metadata.get("adaptive_selected_wing", "")),
+                adaptive_selection_reason=str(layer.metadata.get("adaptive_selection_reason", "")),
+                adaptive_symmetric_spread=round(float(layer.metadata.get("adaptive_symmetric_spread", 0.0)), 4),
+                adaptive_broken_upper_spread=round(float(layer.metadata.get("adaptive_broken_upper_spread", 0.0)), 4),
+                adaptive_broken_lower_spread=round(float(layer.metadata.get("adaptive_broken_lower_spread", 0.0)), 4),
+            )
+
+    def _select_adaptive_layer_variant(
+        self,
+        layer: ActiveButterfly,
+    ) -> tuple[ActiveButterfly | None, dict[str, float | str]]:
+        variants = self._adaptive_variants(layer)
+        if not variants:
+            return None, {}
+
+        cap = float(self.config.max_acceptable_option_spread)
+        evaluations: dict[str, dict[str, float]] = {}
+        for wing_mode, variant in variants.items():
+            estimated_spread = float(self.pricer.estimated_total_spread(variant))
+            estimated_ratio = float(self.pricer.estimated_spread_ratio(variant))
+            entry_debit = float(self.pricer.entry_debit(variant))
+            evaluations[wing_mode] = {
+                "estimated_total_spread": estimated_spread,
+                "estimated_spread_ratio": estimated_ratio,
+                "entry_debit": entry_debit,
+            }
+
+        symmetric_eval = evaluations.get("symmetric")
+        if symmetric_eval is not None and symmetric_eval["estimated_total_spread"] <= cap:
+            return variants["symmetric"], self._adaptive_metadata(evaluations, "symmetric", "symmetric_execution_safe")
+
+        safe_broken = [
+            wing_mode
+            for wing_mode in ("broken_upper", "broken_lower")
+            if wing_mode in evaluations and evaluations[wing_mode]["estimated_total_spread"] <= cap
+        ]
+        if safe_broken:
+            chosen_mode = min(
+                safe_broken,
+                key=lambda wing_mode: (
+                    evaluations[wing_mode]["estimated_total_spread"],
+                    evaluations[wing_mode]["estimated_spread_ratio"],
+                    evaluations[wing_mode]["entry_debit"],
+                ),
+            )
+            return variants[chosen_mode], self._adaptive_metadata(
+                evaluations,
+                chosen_mode,
+                "fallback_to_broken_due_symmetric_spread",
+            )
+
+        chosen_mode = min(
+            evaluations,
+            key=lambda wing_mode: (
+                evaluations[wing_mode]["estimated_total_spread"],
+                evaluations[wing_mode]["estimated_spread_ratio"],
+                evaluations[wing_mode]["entry_debit"],
+            ),
+        )
+        return variants[chosen_mode], self._adaptive_metadata(evaluations, chosen_mode, "no_safe_variant_lowest_spread")
+
+    def _adaptive_variants(self, layer: ActiveButterfly) -> dict[str, ActiveButterfly]:
+        width = max(0.01, float(layer.width))
+        extra_width = max(0.0, float(self.config.broken_wing_extra_width))
+        center = float(layer.center_price)
+
+        def build(wing_mode: str, lower_width: float, upper_width: float) -> ActiveButterfly:
+            variant = ActiveButterfly(
+                layer_id=layer.layer_id,
+                kind=layer.kind,
+                center_price=center,
+                width=width,
+                lower_width=lower_width,
+                upper_width=upper_width,
+                lower_strike=center - lower_width,
+                body_strike=center,
+                upper_strike=center + upper_width,
+                created_at=layer.created_at,
+                dte=layer.dte,
+                metadata=dict(layer.metadata),
+            )
+            variant.metadata["wing_mode"] = wing_mode
+            return variant
+
+        variants = {"symmetric": build("symmetric", width, width)}
+        if extra_width > 0:
+            variants["broken_upper"] = build("broken_upper", width, width + extra_width)
+            variants["broken_lower"] = build("broken_lower", width + extra_width, width)
+        return variants
+
+    @staticmethod
+    def _copy_layer_geometry(target: ActiveButterfly, source: ActiveButterfly) -> None:
+        target.lower_width = source.lower_width
+        target.upper_width = source.upper_width
+        target.lower_strike = source.lower_strike
+        target.body_strike = source.body_strike
+        target.upper_strike = source.upper_strike
+        target.metadata.update(source.metadata)
+
+    @staticmethod
+    def _adaptive_metadata(
+        evaluations: dict[str, dict[str, float]],
+        chosen_mode: str,
+        reason: str,
+    ) -> dict[str, float | str]:
+        return {
+            "wing_mode": chosen_mode,
+            "adaptive_selected_wing": chosen_mode,
+            "adaptive_selection_reason": reason,
+            "adaptive_symmetric_spread": round(float(evaluations.get("symmetric", {}).get("estimated_total_spread", 0.0)), 4),
+            "adaptive_broken_upper_spread": round(float(evaluations.get("broken_upper", {}).get("estimated_total_spread", 0.0)), 4),
+            "adaptive_broken_lower_spread": round(float(evaluations.get("broken_lower", {}).get("estimated_total_spread", 0.0)), 4),
+        }
 
     def _apply_synthetic_chain_gate(
         self,
