@@ -1,6 +1,0 @@
-Backtest complete for SPY | payoff_mode=underlying_only | rows=1950
-Transitions: corridor_outputs\smoke_test\20260328_222904\underlying\transitions.csv
-Actions: corridor_outputs\smoke_test\20260328_222904\underlying\actions.csv
-Summary: corridor_outputs\smoke_test\20260328_222904\underlying\summary.json
-Equity: corridor_outputs\smoke_test\20260328_222904\underlying\equity_curve.csv
-Metrics | total_return=0.0000 | max_drawdown=0.0000 | occupancy=93.33% | avg_rebuilds_per_day=0.00
