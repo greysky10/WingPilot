@@ -4,3 +4,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 artifacts/tmp/
+.tmp_*.html
+
+# Keep local backfills and generated runs out of Git, but preserve checked-in fixtures.
+data/*
+!data/samples/
+!data/samples/**
+corridor_outputs/
+weekly_corridor_outputs/
