@@ -360,6 +360,8 @@ def apply_params(cfg: CorridorConfig, params: dict[str, object], output_dir: Pat
     cfg.butterfly_width = float(params["butterfly_width"])
     cfg.coverage_band_width = float(params["coverage_band_width"])
     cfg.center_tolerance = float(params["center_tolerance"])
+    if "body_strike_offset_points" in params:
+        cfg.body_strike_offset_points = float(params["body_strike_offset_points"])
     cfg.recenter_threshold = float(params["recenter_threshold"])
     cfg.primary_entry_min_center_confidence = float(params["primary_entry_min_center_confidence"])
     cfg.primary_entry_max_momentum_pct = float(params["primary_entry_max_momentum_pct"])
@@ -512,12 +514,14 @@ def summarize_row(name: str, params: dict[str, object], summary: dict[str, objec
         "butterfly_width": float(params["butterfly_width"]),
         "coverage_band_width": float(params["coverage_band_width"]),
         "center_tolerance": float(params["center_tolerance"]),
+        "body_strike_offset_points": float(params.get("body_strike_offset_points", 0.0)),
         "recenter_threshold": float(params["recenter_threshold"]),
         "primary_entry_end": str(params["primary_entry_end"]),
         "skip_entry_weekdays": ",".join(str(value) for value in params.get("skip_entry_weekdays", ())),
         "primary_entry_min_center_confidence": float(params["primary_entry_min_center_confidence"]),
         "primary_entry_max_momentum_pct": float(params["primary_entry_max_momentum_pct"]),
         "option_right_preference": str(params.get("option_right_preference", "call")),
+        "event_dates": tuple(str(value) for value in params.get("event_dates", ())),
         "center_lookback": int(params["center_lookback"]),
         "regime_lookback": int(params["regime_lookback"]),
         "range_width_threshold_pct": float(params["range_width_threshold_pct"]),

@@ -312,10 +312,12 @@ class HistoricalChainButterflyPricer:
         return cls(config, HistoricalOptionChainStore.from_path(resolved_path, price_field=config.historical_chain_price_field))
 
     def attach_candidate(self, layer: ActiveButterfly, symbol: str, timestamp: pd.Timestamp) -> Optional[HistoricalChainSelection]:
+        selection_center = float(layer.metadata.get("selection_center_price", layer.center_price))
+        target_body = self.config.target_body_for_center(selection_center)
         selection = self.store.select_candidate(
             symbol=symbol,
             timestamp=timestamp,
-            center_price=float(layer.center_price),
+            center_price=target_body,
             width=float(layer.width),
             target_dte=int(layer.dte),
             config=self.config,
@@ -349,6 +351,9 @@ class HistoricalChainButterflyPricer:
                 "historical_chain_selected_total_spread": float(candidate.total_spread),
                 "historical_chain_selected_body_distance": float(candidate.body_distance),
                 "historical_chain_selected_dte": int(selected_dte) if selected_dte is not None else int(layer.dte),
+                "selection_center_price": selection_center,
+                "selection_target_body": target_body,
+                "body_strike_offset_points": float(self.config.body_strike_offset_points),
             }
         )
         return selection

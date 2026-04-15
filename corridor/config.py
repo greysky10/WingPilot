@@ -16,6 +16,7 @@ class CorridorConfig:
     center_lookback: int = 36
     center_method: CenterMethod = CenterMethod.VWAP
     center_rounding: float = 1.0
+    body_strike_offset_points: float = 0.0
     regime_lookback: int = 48
     range_width_threshold_pct: float = 0.012
     trend_slope_threshold_pct: float = 0.0015
@@ -106,6 +107,10 @@ class CorridorConfig:
 
     def time_window_label(self) -> str:
         return f"{self.valid_trading_start}-{self.valid_trading_end}"
+
+    def target_body_for_center(self, center_price: float) -> float:
+        rounded_center = round(float(center_price) / float(self.center_rounding)) * float(self.center_rounding)
+        return round(rounded_center + float(self.body_strike_offset_points), 6)
 
     def max_acceptable_option_spread_for_dte(self, dte: Optional[int]) -> float:
         base_cap = max(0.0, float(self.max_acceptable_option_spread))

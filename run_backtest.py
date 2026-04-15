@@ -37,6 +37,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         choices=[item.value for item in CenterMethod],
         help="Center estimation method.",
     )
+    parser.add_argument("--body-strike-offset-points", type=float, default=0.0, help="Offset the target butterfly body strike away from the rounded center by this many strike points.")
     parser.add_argument(
         "--payoff-mode",
         default="underlying_only",
@@ -159,6 +160,7 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         center_lookback=max(10, args.center_lookback),
         center_method=CenterMethod(args.center_method),
         center_rounding=default_center_rounding_for_symbol(args.symbol.upper()),
+        body_strike_offset_points=float(args.body_strike_offset_points),
         butterfly_width=max(1.0, float(args.butterfly_width)),
         wing_mode=str(args.wing_mode),
         broken_wing_extra_width=max(0.0, float(args.broken_wing_extra_width)),

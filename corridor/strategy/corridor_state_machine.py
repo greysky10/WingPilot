@@ -262,6 +262,7 @@ class CorridorStateMachine:
     def _open_layer(self, timestamp: pd.Timestamp, center_price: float, kind: LayerKind, dte: int) -> ActiveButterfly:
         ctx = self.context
         rounded_center = round(center_price / self.config.center_rounding) * self.config.center_rounding
+        target_body = self.config.target_body_for_center(center_price)
         width = self.config.butterfly_width
         extra_width = max(0.0, float(self.config.broken_wing_extra_width))
         lower_width = width
@@ -273,19 +274,21 @@ class CorridorStateMachine:
         layer = ActiveButterfly(
             layer_id=ctx.next_layer_id,
             kind=kind,
-            center_price=rounded_center,
+            center_price=target_body,
             width=width,
             lower_width=lower_width,
             upper_width=upper_width,
-            lower_strike=rounded_center - lower_width,
-            body_strike=rounded_center,
-            upper_strike=rounded_center + upper_width,
+            lower_strike=target_body - lower_width,
+            body_strike=target_body,
+            upper_strike=target_body + upper_width,
             created_at=timestamp,
             dte=dte,
         )
         layer.metadata["wing_mode"] = self.config.wing_mode
         layer.metadata["option_right_preference"] = self.config.option_right_preference
         layer.metadata["configured_target_dte"] = int(dte)
+        layer.metadata["selection_center_price"] = float(rounded_center)
+        layer.metadata["body_strike_offset_points"] = float(self.config.body_strike_offset_points)
         if ctx.current_session_gap_pct is not None:
             layer.metadata["entry_gap_pct"] = round(float(ctx.current_session_gap_pct), 6)
         ctx.next_layer_id += 1
@@ -626,4 +629,8 @@ class CorridorStateMachine:
             metadata["entry_gap_pct"] = round(float(layer.metadata["entry_gap_pct"]), 6)
         if "option_right_preference" in layer.metadata:
             metadata["option_right_preference"] = str(layer.metadata["option_right_preference"])
+        if "selection_center_price" in layer.metadata:
+            metadata["selection_center_price"] = round(float(layer.metadata["selection_center_price"]), 4)
+        if "body_strike_offset_points" in layer.metadata:
+            metadata["body_strike_offset_points"] = round(float(layer.metadata["body_strike_offset_points"]), 4)
         return metadata

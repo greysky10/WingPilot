@@ -55,6 +55,19 @@ def _sample_chain_frame() -> pd.DataFrame:
                 "volume": 100,
             },
             {
+                "date": "2026-01-02",
+                "option_ticker": "O:SPXW260109C05020000",
+                "underlying": "SPX",
+                "expiry": "2026-01-09",
+                "strike": 5020.0,
+                "type": "call",
+                "open": 5.0,
+                "high": 5.5,
+                "low": 4.5,
+                "close": 5.0,
+                "volume": 100,
+            },
+            {
                 "date": "2026-01-03",
                 "option_ticker": "O:SPXW260109C04990000",
                 "underlying": "SPX",
@@ -91,6 +104,19 @@ def _sample_chain_frame() -> pd.DataFrame:
                 "high": 6.5,
                 "low": 5.5,
                 "close": 6.0,
+                "volume": 100,
+            },
+            {
+                "date": "2026-01-03",
+                "option_ticker": "O:SPXW260109C05020000",
+                "underlying": "SPX",
+                "expiry": "2026-01-09",
+                "strike": 5020.0,
+                "type": "call",
+                "open": 4.0,
+                "high": 4.5,
+                "low": 3.5,
+                "close": 4.0,
                 "volume": 100,
             },
             {
@@ -222,6 +248,26 @@ class HistoricalChainPricerTests(unittest.TestCase):
             self.assertEqual(layer.metadata["historical_chain_upper_ticker"], "O:SPXW260109C05010000")
             self.assertAlmostEqual(pricer.entry_debit(layer), 2.0)
             self.assertAlmostEqual(pricer.mark_to_model(layer, 5005.0, pd.Timestamp("2026-01-03T15:00:00Z")), 4.0)
+
+    def test_historical_chain_pricer_uses_selection_center_anchor_for_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset_path = self._write_dataset(tmp_dir)
+            cfg = self._config(dataset_path)
+            cfg.body_strike_offset_points = 10.0
+            pricer = HistoricalChainButterflyPricer.from_config(cfg)
+            layer = _build_layer(center_price=5010.0)
+            layer.lower_strike = 5000.0
+            layer.body_strike = 5010.0
+            layer.upper_strike = 5020.0
+            layer.metadata["selection_center_price"] = 5000.0
+
+            selection = pricer.attach_candidate(layer, "SPX", pd.Timestamp("2026-01-02T15:00:00Z"))
+
+            self.assertIsNotNone(selection)
+            self.assertEqual(layer.body_strike, 5010.0)
+            self.assertEqual(layer.metadata["selection_center_price"], 5000.0)
+            self.assertEqual(layer.metadata["selection_target_body"], 5010.0)
+            self.assertEqual(layer.metadata["historical_chain_body_ticker"], "O:SPXW260109C05010000")
 
     def test_engine_historical_chain_selection_enriches_open_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

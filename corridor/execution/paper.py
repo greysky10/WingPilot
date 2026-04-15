@@ -9,6 +9,7 @@ import socket
 import time
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,7 +17,16 @@ import pandas as pd
 
 from corridor.config import CorridorConfig
 from corridor.data.ib_contracts import build_option_contract, build_underlying_contract
-from corridor.models import ActiveButterfly, ActionRecord, ActionType, CorridorState, LayerKind, Regime
+from corridor.models import (
+    ActiveButterfly,
+    ActionRecord,
+    ActionType,
+    CenterEstimate,
+    CorridorState,
+    LayerKind,
+    Regime,
+    RegimeSnapshot,
+)
 from corridor.notifications.discord import send_discord_json_alert, send_discord_text_alert
 from corridor.options.butterfly_selector import ButterflyCandidate, select_butterflies_with_diagnostics
 from corridor.options.chain_loader import IBOptionChainLoader, OptionQuote
@@ -49,6 +59,13 @@ class PaperRunnerConfig:
     paper_execution: bool = False
     once: bool = False
     check_only: bool = False
+    paper_smoke_mode: bool = False
+    smoke_max_entries_per_day: int = 1
+    smoke_quantity: int = 1
+    smoke_entry_end: str = "11:00"
+    smoke_force_close_minutes: int = 45
+    discord_summary: bool = False
+    discord_summary_min_interval_minutes: int = 30
     output_dir: Path = Path("corridor_outputs") / "paper_runner"
     order_tif: str = "DAY"
     log_prefix: str = "paper"
@@ -68,6 +85,7 @@ class ManagedPosition:
     open_limit: float
     open_status: str
     source_action: str
+    sleeve_id: str = "main"
     open_fill_price: Optional[float] = None
     entry_leg_prices: Optional[dict[str, float]] = None
     layer_kind: str = LayerKind.PRIMARY.value
@@ -94,6 +112,7 @@ class InProgressBar:
 
 def managed_position_to_payload(position: ManagedPosition) -> dict[str, Any]:
     return {
+        "sleeve_id": position.sleeve_id,
         "layer_id": position.layer_id,
         "quantity": position.quantity,
         "opened_at": position.opened_at.isoformat(),
@@ -157,6 +176,7 @@ def managed_position_from_payload(payload: dict[str, Any]) -> ManagedPosition:
         wing_mode=str(candidate_payload.get("wing_mode", "symmetric") or "symmetric"),
     )
     return ManagedPosition(
+        sleeve_id=str(payload.get("sleeve_id", "main") or "main"),
         layer_id=int(payload["layer_id"]),
         candidate=candidate,
         quantity=int(payload["quantity"]),
@@ -229,6 +249,11 @@ def _timeframe_to_delta(label: str) -> pd.Timedelta:
     if unit.startswith("day"):
         return pd.Timedelta(days=amount)
     raise ValueError(f"Unsupported timeframe: {label}")
+
+
+def _parse_clock(value: str) -> dt_time:
+    hour, minute = str(value).split(":", maxsplit=1)
+    return dt_time(hour=int(hour), minute=int(minute))
 
 
 def _format_ib_history_error(errors: list[tuple[int, str]], context: str) -> str:
@@ -573,6 +598,7 @@ class PaperCorridorRunner:
         self.last_processed_ts: Optional[pd.Timestamp] = None
         self.positions: dict[int, ManagedPosition] = {}
         self.bar_delta = _timeframe_to_delta(self.cfg.timeframe)
+        self.smoke_entry_end_time = _parse_clock(self.runner_cfg.smoke_entry_end)
         self.market_data_type = 3 if self.runner_cfg.mode == "delayed" else 1
         self.market_ticker = None
         self.partial_bar: Optional[InProgressBar] = None
@@ -586,6 +612,8 @@ class PaperCorridorRunner:
         self.last_outage_notice: Optional[str] = None
         self.history_seed_status: str = "History seed has not run yet."
         self.latest_candidate_diagnostics: dict[str, Any] | None = None
+        self.last_discord_summary_sent_at: Optional[pd.Timestamp] = None
+        self.last_discord_summary_signature: Optional[str] = None
         self.wing_stats: dict[str, int] = {
             "symmetric": 0,
             "broken_upper": 0,
@@ -647,6 +675,7 @@ class PaperCorridorRunner:
             print(
                 f"Paper corridor runner started | symbol={self.cfg.symbol} | mode={self.runner_cfg.mode} | "
                 f"execution={'paper' if self.runner_cfg.paper_execution else 'dry-run'} | timeframe={self.cfg.timeframe}"
+                f"{' | smoke_mode=on' if self.runner_cfg.paper_smoke_mode else ''}"
             )
             while True:
                 self.poll_once()
@@ -883,6 +912,169 @@ class PaperCorridorRunner:
             f" | unrealized={_format_signed_dollar(unrealized_dollars)}"
             f" | open_positions={len(self.positions)}"
         )
+
+    def _process_smoke_mode_bar(
+        self,
+        row: pd.Series,
+        regime: Optional[RegimeSnapshot],
+        center: Optional[CenterEstimate],
+        *,
+        allow_orders: bool,
+        emit_logs: bool = True,
+    ) -> None:
+        timestamp = pd.Timestamp(row["timestamp"])
+        price = float(row["close"])
+        local_ts = _ensure_utc_timestamp(timestamp).tz_convert("America/New_York")
+
+        self.machine.sync_session_context(timestamp, price, float(row["open"]) if "open" in row and pd.notna(row["open"]) else None)
+        if allow_orders:
+            if self._smoke_exit_due(local_ts):
+                self._emit_smoke_close(timestamp, price, emit_logs=emit_logs)
+            elif self._smoke_entry_allowed(local_ts, center):
+                self._emit_smoke_entry(timestamp, price, center, regime, emit_logs=emit_logs)
+
+    def _smoke_entries_taken_today(self, local_date_iso: str) -> int:
+        orders_today = self._rows_for_local_date(self.logger.paths["orders"], local_date_iso)
+        return sum(
+            1
+            for row in orders_today
+            if row.get("side") == "OPEN" and row.get("sleeve_id") == "smoke" and row.get("reason") == "Paper smoke mode entry."
+        )
+
+    def _smoke_entry_allowed(
+        self,
+        local_ts: pd.Timestamp,
+        center: Optional[CenterEstimate],
+    ) -> bool:
+        if not self.runner_cfg.paper_smoke_mode:
+            return False
+        if self.execution_halted_reason or center is None:
+            return False
+        if len(self.history) < self.required_warmup_bars:
+            return False
+        if self._smoke_positions():
+            return False
+        local_time = local_ts.timetz().replace(tzinfo=None)
+        if local_time < self.machine.start_time or local_time > self.smoke_entry_end_time:
+            return False
+        session_date = local_ts.date().isoformat()
+        return self._smoke_entries_taken_today(session_date) < max(1, int(self.runner_cfg.smoke_max_entries_per_day))
+
+    def _smoke_exit_due(self, local_ts: pd.Timestamp) -> bool:
+        smoke_positions = self._smoke_positions()
+        if not self.runner_cfg.paper_smoke_mode or not smoke_positions:
+            return False
+        local_time = local_ts.timetz().replace(tzinfo=None)
+        if local_time > self.machine.end_time:
+            return True
+        max_hold = pd.Timedelta(minutes=max(1, int(self.runner_cfg.smoke_force_close_minutes)))
+        for position in smoke_positions:
+            opened_local = _ensure_utc_timestamp(position.opened_at).tz_convert("America/New_York")
+            if local_ts >= opened_local + max_hold:
+                return True
+        return False
+
+    def _emit_smoke_entry(
+        self,
+        timestamp: pd.Timestamp,
+        price: float,
+        center: CenterEstimate,
+        regime: Optional[RegimeSnapshot],
+        *,
+        emit_logs: bool,
+    ) -> None:
+        layer_id = int(self.machine.context.next_layer_id)
+        target_dte = int(self.cfg.layer_dte_targets[0]) if self.cfg.layer_dte_targets else int(self.cfg.default_dte)
+        action = ActionRecord(
+            timestamp=timestamp,
+            symbol=self.cfg.symbol,
+            action=ActionType.SMOKE_ENTRY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=price,
+            center_price=center.center_price,
+            layer_id=layer_id,
+            detail="Paper smoke mode entry.",
+            metadata={
+                "kind": LayerKind.PRIMARY.value,
+                "body_strike": round(float(self.cfg.target_body_for_center(center.center_price)), 4),
+                "configured_target_dte": target_dte,
+                "selection_center_price": round(float(center.center_price), 4),
+                "body_strike_offset_points": round(float(self.cfg.body_strike_offset_points), 4),
+                "paper_smoke_mode": "true",
+                "sleeve_id": "smoke",
+                "quantity": int(self.runner_cfg.smoke_quantity),
+            },
+        )
+        if emit_logs:
+            self.logger.write_action(
+                {
+                    "timestamp": action.timestamp.isoformat(),
+                    "symbol": action.symbol,
+                    "action": action.action.value,
+                    "sleeve_id": "smoke",
+                    "state": action.state.value,
+                    "price": round(action.price, 4),
+                    "center_price": action.center_price,
+                    "layer_id": action.layer_id,
+                    "detail": action.detail,
+                    **action.metadata,
+                }
+            )
+            print(
+                f"Action | {action.action.value} | layer={action.layer_id} | "
+                f"price={action.price:.2f} | detail={action.detail}"
+            )
+        self.machine.context.state = CorridorState.ACTIVE_CENTERED
+        self.machine.context.current_center = float(center.center_price)
+        self.machine.context.last_primary_entry_session_date = self.machine.context.session_date
+        self._open_position(action, center, regime)
+        if action.layer_id in self.positions:
+            self.machine.context.next_layer_id += 1
+
+    def _emit_smoke_close(
+        self,
+        timestamp: pd.Timestamp,
+        price: float,
+        *,
+        emit_logs: bool,
+    ) -> None:
+        smoke_layer_ids = [position.layer_id for position in self._smoke_positions()]
+        for layer_id in smoke_layer_ids:
+            action = ActionRecord(
+                timestamp=timestamp,
+                symbol=self.cfg.symbol,
+                action=ActionType.SMOKE_EXIT,
+                state=CorridorState.ACTIVE_CENTERED,
+                price=price,
+                center_price=self.machine.context.current_center,
+                layer_id=layer_id,
+                detail="Paper smoke mode timed exit.",
+                metadata={"paper_smoke_mode": "true", "sleeve_id": "smoke"},
+            )
+            if emit_logs:
+                self.logger.write_action(
+                {
+                    "timestamp": action.timestamp.isoformat(),
+                    "symbol": action.symbol,
+                    "action": action.action.value,
+                    "sleeve_id": "smoke",
+                    "state": action.state.value,
+                        "price": round(action.price, 4),
+                        "center_price": action.center_price,
+                        "layer_id": action.layer_id,
+                        "detail": action.detail,
+                        **action.metadata,
+                    }
+                )
+                print(
+                    f"Action | {action.action.value} | layer={action.layer_id} | "
+                    f"price={action.price:.2f} | detail={action.detail}"
+                )
+            self._close_position(action)
+        if not self.positions:
+            self.machine.context.state = CorridorState.IDLE
+            self.machine.context.current_center = None
+            self.machine.context.drift_count = 0
 
     def _today_realized_pnl_dollars(self) -> float:
         local_date_iso = _ensure_utc_timestamp(pd.Timestamp.utcnow()).tz_convert("America/New_York").date().isoformat()
@@ -1203,6 +1395,7 @@ class PaperCorridorRunner:
                     "timestamp": action.timestamp.isoformat(),
                     "symbol": action.symbol,
                     "action": action.action.value,
+                    "sleeve_id": self._action_sleeve_id(action),
                     "state": action.state.value,
                     "price": round(action.price, 4),
                     "center_price": action.center_price,
@@ -1217,6 +1410,8 @@ class PaperCorridorRunner:
                 )
             if allow_orders:
                 self._handle_action(action, center, regime)
+        if self.runner_cfg.paper_smoke_mode:
+            self._process_smoke_mode_bar(row, regime, center, allow_orders=allow_orders, emit_logs=emit_logs)
 
     def _handle_action(self, action: ActionRecord, center, regime) -> None:
         if action.action in {ActionType.DRIFT_STARTED, ActionType.DRIFT_RESOLVED, ActionType.REBUILD_REQUESTED}:
@@ -1333,19 +1528,41 @@ class PaperCorridorRunner:
 
     def _primary_position(self) -> Optional[ManagedPosition]:
         for position in self.positions.values():
+            if position.sleeve_id != "main":
+                continue
             if position.layer_kind == LayerKind.PRIMARY.value:
                 return position
-        return next(iter(self.positions.values()), None)
+        for position in self.positions.values():
+            if position.sleeve_id == "main":
+                return position
+        return None
+
+    @staticmethod
+    def _action_sleeve_id(action: ActionRecord) -> str:
+        return str(action.metadata.get("sleeve_id") or ("smoke" if action.action == ActionType.SMOKE_ENTRY else "main"))
+
+    def _positions_for_sleeve(self, sleeve_id: str) -> list[ManagedPosition]:
+        return [position for position in self.positions.values() if position.sleeve_id == sleeve_id]
+
+    def _smoke_positions(self) -> list[ManagedPosition]:
+        return [
+            position
+            for position in self.positions.values()
+            if position.sleeve_id == "smoke" or position.source_action == ActionType.SMOKE_ENTRY.value
+        ]
 
     def _open_position(self, action: ActionRecord, center, regime) -> None:
         if action.layer_id is None or action.layer_id in self.positions:
             return
+        sleeve_id = self._action_sleeve_id(action)
+        order_quantity = max(1, int(action.metadata.get("quantity") or self.runner_cfg.quantity))
         if self.execution_halted_reason:
             self._rollback_unfilled_open(action.layer_id)
             self._log_order(
                 {
                     "timestamp": action.timestamp.isoformat(),
                     "layer_id": action.layer_id,
+                    "sleeve_id": sleeve_id,
                     "symbol": self.cfg.symbol,
                     "side": "OPEN",
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1354,7 +1571,9 @@ class PaperCorridorRunner:
                 }
             )
             return
-        if center is None or regime is None or regime.regime != Regime.RANGE:
+        if center is None or regime is None:
+            return
+        if action.action != ActionType.SMOKE_ENTRY and regime.regime != Regime.RANGE:
             return
 
         target_body = float(action.metadata.get("body_strike") or action.metadata.get("center_price") or action.center_price or 0.0)
@@ -1366,6 +1585,7 @@ class PaperCorridorRunner:
                 {
                     "timestamp": action.timestamp.isoformat(),
                     "layer_id": action.layer_id,
+                    "sleeve_id": sleeve_id,
                     "symbol": self.cfg.symbol,
                     "side": "OPEN",
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1382,6 +1602,7 @@ class PaperCorridorRunner:
                 {
                     "timestamp": action.timestamp.isoformat(),
                     "layer_id": action.layer_id,
+                    "sleeve_id": sleeve_id,
                     "symbol": self.cfg.symbol,
                     "side": "OPEN",
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1407,7 +1628,7 @@ class PaperCorridorRunner:
         open_fill_price = None
         failure_reason = ""
         if self.runner_cfg.paper_execution:
-            trade = self._place_combo_order(candidate, "BUY", limit_price)
+            trade = self._place_combo_order(candidate, "BUY", limit_price, order_quantity, sleeve_id)
             status = trade.orderStatus.status or "submitted"
             order_id = getattr(trade.order, "orderId", None)
             fill_audit = getattr(trade, "fillAudit", None)
@@ -1420,12 +1641,13 @@ class PaperCorridorRunner:
                     {
                         "timestamp": action.timestamp.isoformat(),
                         "layer_id": action.layer_id,
+                        "sleeve_id": sleeve_id,
                         "symbol": self.cfg.symbol,
                         "side": "OPEN",
                         "mode": "paper",
                         "status": status,
                         "order_id": order_id,
-                        "quantity": self.runner_cfg.quantity,
+                        "quantity": order_quantity,
                         "target_dte": target_dte,
                         "calendar_dte": candidate.calendar_dte,
                         "expiry": candidate.expiry,
@@ -1457,12 +1679,13 @@ class PaperCorridorRunner:
                     {
                         "timestamp": action.timestamp.isoformat(),
                         "layer_id": action.layer_id,
+                        "sleeve_id": sleeve_id,
                         "symbol": self.cfg.symbol,
                         "side": "OPEN",
                         "mode": "paper",
                         "status": status,
                         "order_id": order_id,
-                        "quantity": self.runner_cfg.quantity,
+                        "quantity": order_quantity,
                         "target_dte": target_dte,
                         "calendar_dte": candidate.calendar_dte,
                         "expiry": candidate.expiry,
@@ -1487,9 +1710,10 @@ class PaperCorridorRunner:
 
         entry_leg_prices = self._capture_entry_leg_prices(candidate)
         self.positions[action.layer_id] = ManagedPosition(
+            sleeve_id=sleeve_id,
             layer_id=action.layer_id,
             candidate=candidate,
-            quantity=self.runner_cfg.quantity,
+            quantity=order_quantity,
             opened_at=action.timestamp,
             open_limit=limit_price,
             open_status=status,
@@ -1503,12 +1727,13 @@ class PaperCorridorRunner:
             {
                 "timestamp": action.timestamp.isoformat(),
                 "layer_id": action.layer_id,
+                "sleeve_id": sleeve_id,
                 "symbol": self.cfg.symbol,
                 "side": "OPEN",
                 "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
                 "status": status,
                 "order_id": order_id,
-                "quantity": self.runner_cfg.quantity,
+                "quantity": order_quantity,
                 "target_dte": target_dte,
                 "calendar_dte": candidate.calendar_dte,
                 "expiry": candidate.expiry,
@@ -1541,6 +1766,7 @@ class PaperCorridorRunner:
                 {
                     "timestamp": action.timestamp.isoformat(),
                     "layer_id": action.layer_id,
+                    "sleeve_id": self._action_sleeve_id(action),
                     "symbol": self.cfg.symbol,
                     "side": "CLOSE",
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1554,6 +1780,7 @@ class PaperCorridorRunner:
                 {
                     "timestamp": action.timestamp.isoformat(),
                     "layer_id": action.layer_id,
+                    "sleeve_id": position.sleeve_id,
                     "symbol": self.cfg.symbol,
                     "side": "CLOSE",
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1570,6 +1797,7 @@ class PaperCorridorRunner:
                 {
                     "timestamp": action.timestamp.isoformat(),
                     "layer_id": action.layer_id,
+                    "sleeve_id": position.sleeve_id,
                     "symbol": self.cfg.symbol,
                     "side": "CLOSE",
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1594,7 +1822,7 @@ class PaperCorridorRunner:
         close_fill_price = None
         failure_reason = ""
         if self.runner_cfg.paper_execution:
-            trade = self._place_combo_order(live_candidate, "SELL", limit_price)
+            trade = self._place_combo_order(live_candidate, "SELL", limit_price, position.quantity, position.sleeve_id)
             status = trade.orderStatus.status or "submitted"
             order_id = getattr(trade.order, "orderId", None)
             fill_audit = getattr(trade, "fillAudit", None)
@@ -1620,6 +1848,7 @@ class PaperCorridorRunner:
             {
                 "timestamp": action.timestamp.isoformat(),
                 "layer_id": action.layer_id,
+                "sleeve_id": position.sleeve_id,
                 "symbol": self.cfg.symbol,
                 "side": "CLOSE",
                 "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
@@ -1672,6 +1901,7 @@ class PaperCorridorRunner:
         position = self.positions[action.layer_id]
         candidate = position.candidate
         payload: dict[str, Any] = {
+            "sleeve_id": position.sleeve_id,
             "symbol": candidate.symbol,
             "expiry": candidate.expiry,
             "lower_strike": candidate.lower_strike,
@@ -1827,10 +2057,24 @@ class PaperCorridorRunner:
             return max(0.01, round(candidate.net_debit + spread_buffer, 2))
         return max(0.01, round(max(0.01, candidate.net_debit - spread_buffer), 2))
 
-    def _place_combo_order(self, candidate: ButterflyCandidate, side: str, limit_price: float):
-        return self._place_combo_order_with_chase(candidate, side, limit_price)
+    def _place_combo_order(
+        self,
+        candidate: ButterflyCandidate,
+        side: str,
+        limit_price: float,
+        quantity: int = 1,
+        sleeve_id: str = "main",
+    ):
+        return self._place_combo_order_with_chase(candidate, side, limit_price, quantity, sleeve_id)
 
-    def _place_combo_order_with_chase(self, candidate: ButterflyCandidate, side: str, limit_price: float):
+    def _place_combo_order_with_chase(
+        self,
+        candidate: ButterflyCandidate,
+        side: str,
+        limit_price: float,
+        quantity: int = 1,
+        sleeve_id: str = "main",
+    ):
         current_limit = limit_price
         last_trade = None
         initial_midpoint = round(float(candidate.net_debit), 4)
@@ -1846,7 +2090,7 @@ class PaperCorridorRunner:
             "abort_reason": None,
         }
         for step in range(max(1, self.runner_cfg.combo_max_chase_steps)):
-            trade = self._place_combo_order_once(candidate, side, current_limit)
+            trade = self._invoke_place_combo_order_once(candidate, side, current_limit, quantity, sleeve_id)
             last_trade = trade
             status = str(getattr(trade.orderStatus, "status", "") or "")
             fill_price = self._trade_fill_price(trade)
@@ -1920,7 +2164,14 @@ class PaperCorridorRunner:
             setattr(last_trade, "fillAudit", fill_audit)
         return last_trade
 
-    def _place_combo_order_once(self, candidate: ButterflyCandidate, side: str, limit_price: float):
+    def _place_combo_order_once(
+        self,
+        candidate: ButterflyCandidate,
+        side: str,
+        limit_price: float,
+        quantity: int = 1,
+        sleeve_id: str = "main",
+    ):
         right = "C" if candidate.right == "CALL" else "P"
         lower = build_option_contract(
             symbol=self.cfg.symbol,
@@ -1958,11 +2209,24 @@ class PaperCorridorRunner:
         # point back at the original long butterfly instead of flattening it.
         leg_specs = self._long_butterfly_leg_specs(qualified)
         combo = build_butterfly_combo(self.cfg.symbol, self.cfg.ib_currency, self.cfg.ib_exchange, leg_specs)
-        order = LimitOrder(side, self.runner_cfg.quantity, limit_price, tif=self.runner_cfg.order_tif)
-        order.orderRef = f"corridor:{self.cfg.symbol}:{side}:{candidate.expiry}:{candidate.body_strike}"
+        order = LimitOrder(side, quantity, limit_price, tif=self.runner_cfg.order_tif)
+        order.orderRef = f"corridor:{sleeve_id}:{self.cfg.symbol}:{side}:{candidate.expiry}:{candidate.body_strike}"
         trade = self.ib.placeOrder(combo, order)
         self.ib.sleep(max(0.2, float(self.runner_cfg.combo_fill_wait_seconds)))
         return trade
+
+    def _invoke_place_combo_order_once(
+        self,
+        candidate: ButterflyCandidate,
+        side: str,
+        limit_price: float,
+        quantity: int,
+        sleeve_id: str,
+    ):
+        try:
+            return self._place_combo_order_once(candidate, side, limit_price, quantity, sleeve_id)
+        except TypeError:
+            return self._place_combo_order_once(candidate, side, limit_price)
 
     def _next_combo_limit(
         self,
@@ -2588,7 +2852,7 @@ class PaperCorridorRunner:
             )
         combo_pnl_label = "n/a" if combo_pnl_dollars is None else _format_signed_dollar(combo_pnl_dollars)
         header = (
-            f"Position {position.layer_id} | {position.candidate.symbol} {position.candidate.expiry}"
+            f"Position {position.layer_id} | sleeve={position.sleeve_id} | {position.candidate.symbol} {position.candidate.expiry}"
             f" {position.candidate.right} | qty={position.quantity}"
             f" | strikes={position.candidate.lower_strike:.1f}/{position.candidate.body_strike:.1f}/{position.candidate.upper_strike:.1f}"
             f" | combo_entry={_format_optional_price(combo_entry)}"
@@ -2603,6 +2867,44 @@ class PaperCorridorRunner:
         detail_lines = self._build_discord_position_detail_lines()
         payload = message if not detail_lines else message + "\n" + "\n".join(detail_lines)
         send_discord_text_alert(self.discord_webhook_url, payload)
+
+    def _maybe_send_discord_test_summary(
+        self,
+        daily_report: dict[str, Any],
+        summary_payload: dict[str, Any],
+        summary_text: str,
+    ) -> None:
+        if not self.runner_cfg.discord_summary:
+            return
+        if not self.discord_webhook_url:
+            return
+
+        now_utc = _ensure_utc_timestamp(pd.Timestamp.utcnow())
+        signature_payload = {
+            "report_date": daily_report.get("report_date"),
+            "overall_status": summary_payload.get("overall_status"),
+            "filled_orders_today": summary_payload.get("filled_orders_today"),
+            "open_positions_count": summary_payload.get("open_positions_count"),
+            "latest_state": summary_payload.get("latest_state"),
+            "latest_regime": summary_payload.get("latest_regime"),
+            "candidate_count": daily_report.get("candidate_count"),
+            "candidate_status": daily_report.get("candidate_status"),
+            "paper_smoke_mode": daily_report.get("paper_smoke_mode"),
+        }
+        signature = json.dumps(signature_payload, sort_keys=True, ensure_ascii=False)
+        if signature == self.last_discord_summary_signature and self.last_discord_summary_sent_at is not None:
+            elapsed = (now_utc - self.last_discord_summary_sent_at).total_seconds() / 60.0
+            if elapsed < max(1, int(self.runner_cfg.discord_summary_min_interval_minutes)):
+                return
+
+        header = (
+            f"Discord Paper Summary | {self.cfg.symbol} | "
+            f"{'smoke' if self.runner_cfg.paper_smoke_mode else 'mainline'} | "
+            f"{'paper' if self.runner_cfg.paper_execution else 'shadow'}"
+        )
+        send_discord_text_alert(self.discord_webhook_url, header + "\n" + summary_text.strip())
+        self.last_discord_summary_signature = signature
+        self.last_discord_summary_sent_at = now_utc
 
     def _long_butterfly_leg_specs(self, qualified_contracts) -> list[ComboLegSpec]:
         return [
@@ -2654,7 +2956,9 @@ class PaperCorridorRunner:
         daily_report = self._build_daily_report(payload)
         self.logger.write_daily_report(daily_report)
         test_summary = build_paper_test_summary(payload, daily_report)
-        self.logger.write_test_summary(test_summary, format_paper_test_summary(test_summary))
+        summary_text = format_paper_test_summary(test_summary)
+        self.logger.write_test_summary(test_summary, summary_text)
+        self._maybe_send_discord_test_summary(daily_report, test_summary, summary_text)
 
     def _build_daily_report(self, state_payload: dict[str, Any]) -> dict[str, Any]:
         now_utc = _ensure_utc_timestamp(pd.Timestamp.utcnow())
@@ -2688,6 +2992,11 @@ class PaperCorridorRunner:
             "symbol": self.cfg.symbol,
             "configured_wing_mode": state_payload.get("configured_wing_mode"),
             "execution_mode": state_payload.get("execution_mode"),
+            "paper_smoke_mode": state_payload.get("paper_smoke_mode"),
+            "smoke_entry_end": state_payload.get("smoke_entry_end"),
+            "smoke_force_close_minutes": state_payload.get("smoke_force_close_minutes"),
+            "smoke_max_entries_per_day": state_payload.get("smoke_max_entries_per_day"),
+            "smoke_entries_today": state_payload.get("smoke_entries_today"),
             "startup_mode": state_payload.get("startup_mode"),
             "history_seeded": state_payload.get("history_seeded"),
             "history_seed_status": state_payload.get("history_seed_status"),
@@ -2710,6 +3019,7 @@ class PaperCorridorRunner:
             "adaptive_fallback_rate": adaptive_fallback_rate,
             "fallback_type_distribution": fallback_type_distribution,
             "open_positions_count": len(state_payload.get("open_positions", [])),
+            "open_positions_by_sleeve": state_payload.get("open_positions_by_sleeve"),
             "open_position_bodies": ",".join(
                 str(item.get("body_strike")) for item in state_payload.get("open_positions", []) if item.get("body_strike") is not None
             ),
@@ -2814,10 +3124,12 @@ class PaperCorridorRunner:
                 f"Warming up from live market data only. "
                 f"Completed bars: {history_bars}/{self.required_warmup_bars}."
             )
-        elif regime is not None and regime.regime == Regime.RANGE and center is not None:
+        elif center is not None and (
+            self.runner_cfg.paper_smoke_mode or (regime is not None and regime.regime == Regime.RANGE)
+        ):
             try:
                 self.latest_candidate_diagnostics = None
-                loaded = self._load_candidates(center.center_price)
+                loaded = self._load_candidates(self.cfg.target_body_for_center(center.center_price))
                 candidate_diagnostics = self.latest_candidate_diagnostics
                 candidates = [
                     {
@@ -2840,7 +3152,12 @@ class PaperCorridorRunner:
                     for candidate in loaded[:5]
                 ]
                 if candidates:
-                    candidate_status = f"Loaded {len(candidates)} candidate butterflies for the current center."
+                    if self.runner_cfg.paper_smoke_mode and (regime is None or regime.regime != Regime.RANGE):
+                        candidate_status = (
+                            f"Loaded {len(candidates)} candidate butterflies for the current center in smoke mode."
+                        )
+                    else:
+                        candidate_status = f"Loaded {len(candidates)} candidate butterflies for the current center."
                 else:
                     candidate_status = "No qualifying butterflies matched the current center and spread filters."
                     if candidate_diagnostics is not None:
@@ -2898,6 +3215,7 @@ class PaperCorridorRunner:
             "open_positions": [
                 {
                     "layer_id": position.layer_id,
+                    "sleeve_id": position.sleeve_id,
                     "expiry": position.candidate.expiry,
                     "trading_class": position.candidate.trading_class,
                     "right": position.candidate.right,
@@ -2921,6 +3239,16 @@ class PaperCorridorRunner:
                 for position in sorted(self.positions.values(), key=lambda item: item.layer_id)
             ],
             "execution_mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+            "paper_smoke_mode": self.runner_cfg.paper_smoke_mode,
+            "smoke_entry_end": self.runner_cfg.smoke_entry_end,
+            "smoke_force_close_minutes": self.runner_cfg.smoke_force_close_minutes,
+            "smoke_max_entries_per_day": self.runner_cfg.smoke_max_entries_per_day,
+            "smoke_entries_today": self._smoke_entries_taken_today(
+                _ensure_utc_timestamp(pd.Timestamp.utcnow()).tz_convert("America/New_York").date().isoformat()
+            ),
+            "open_positions_by_sleeve": dict(
+                Counter(position.sleeve_id for position in self.positions.values())
+            ),
             "execution_halted_reason": self.execution_halted_reason,
             "configured_wing_mode": self.cfg.wing_mode,
             "wing_stats": dict(self.wing_stats),

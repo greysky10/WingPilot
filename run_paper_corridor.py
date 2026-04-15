@@ -24,6 +24,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=int, default=30, help="Polling interval for new completed bars.")
     parser.add_argument("--history-days", type=int, default=5, help="Historical days to seed before live polling.")
     parser.add_argument("--center-method", default=CenterMethod.VWAP.value, choices=[item.value for item in CenterMethod])
+    parser.add_argument("--body-strike-offset-points", type=float, default=0.0, help="Offset the target butterfly body strike away from the rounded center by this many strike points.")
     parser.add_argument("--butterfly-width", type=float, default=10.0, help="Butterfly wing width in strike points.")
     parser.add_argument(
         "--wing-mode",
@@ -100,12 +101,51 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", default="", help="Optional output directory.")
     parser.add_argument("--paper-execution", action="store_true", help="Submit combo orders to the connected IB paper account.")
     parser.add_argument(
+        "--paper-smoke-mode",
+        action="store_true",
+        help="Run a higher-frequency paper execution test mode that relaxes signal gating and forces an intraday close after a fixed hold time.",
+    )
+    parser.add_argument(
+        "--smoke-max-entries-per-day",
+        type=int,
+        default=1,
+        help="Maximum number of paper smoke-mode entries allowed per New York session.",
+    )
+    parser.add_argument(
+        "--smoke-quantity",
+        type=int,
+        default=1,
+        help="Number of butterfly combos per smoke-mode entry.",
+    )
+    parser.add_argument(
+        "--smoke-entry-end",
+        default="11:00",
+        help="Latest New York time allowed for a new smoke-mode entry.",
+    )
+    parser.add_argument(
+        "--smoke-force-close-minutes",
+        type=int,
+        default=45,
+        help="Minutes to hold a smoke-mode paper position before forcing an exit on the next completed bar.",
+    )
+    parser.add_argument(
         "--sync-on-start",
         action="store_true",
         help="Restore the persisted paper-runner recovery state and reconcile it against the live IB account instead of resetting flat.",
     )
     parser.add_argument("--once", action="store_true", help="Run a single polling pass and exit.")
     parser.add_argument("--check", action="store_true", help="Validate connectivity, compute the current snapshot, and exit.")
+    parser.add_argument(
+        "--discord-summary",
+        action="store_true",
+        help="Send the generated paper test summary text to DISCORD_WEBHOOK_URL with change-aware throttling.",
+    )
+    parser.add_argument(
+        "--discord-summary-min-interval-minutes",
+        type=int,
+        default=30,
+        help="Minimum minutes between repeated Discord summary posts when the summary signature has not changed.",
+    )
     return parser.parse_args(argv)
 
 
@@ -120,6 +160,7 @@ def build_configs(args: argparse.Namespace) -> tuple[CorridorConfig, PaperRunner
         symbol=args.symbol.upper(),
         center_method=CenterMethod(args.center_method),
         center_rounding=default_center_rounding_for_symbol(args.symbol.upper()),
+        body_strike_offset_points=float(args.body_strike_offset_points),
         payoff_mode="underlying_only",
         ib_client_id=args.client_id,
         butterfly_width=max(1.0, float(args.butterfly_width)),
@@ -185,6 +226,13 @@ def build_configs(args: argparse.Namespace) -> tuple[CorridorConfig, PaperRunner
         paper_execution=args.paper_execution,
         once=args.once,
         check_only=args.check,
+        paper_smoke_mode=bool(args.paper_smoke_mode),
+        smoke_max_entries_per_day=max(1, int(args.smoke_max_entries_per_day)),
+        smoke_quantity=max(1, int(args.smoke_quantity)),
+        smoke_entry_end=str(args.smoke_entry_end),
+        smoke_force_close_minutes=max(1, int(args.smoke_force_close_minutes)),
+        discord_summary=bool(args.discord_summary),
+        discord_summary_min_interval_minutes=max(1, int(args.discord_summary_min_interval_minutes)),
         output_dir=output_dir,
         max_spread_pct_of_debit=max(0.05, float(args.max_spread_pct_of_debit)),
         combo_fill_wait_seconds=max(0.2, float(args.combo_fill_wait_seconds)),

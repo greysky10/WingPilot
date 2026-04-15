@@ -23,7 +23,13 @@ from corridor.options.chain_loader import OptionQuote
 
 
 class PaperCorridorRunnerTests(unittest.TestCase):
-    def make_runner(self, *, paper_execution: bool = True, start_flat: bool = True) -> PaperCorridorRunner:
+    def make_runner(
+        self,
+        *,
+        paper_execution: bool = True,
+        start_flat: bool = True,
+        **runner_overrides,
+    ) -> PaperCorridorRunner:
         tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
         cfg = CorridorConfig(symbol="SPY")
@@ -32,6 +38,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             paper_execution=paper_execution,
             start_flat=start_flat,
             output_dir=Path(tmpdir.name),
+            **runner_overrides,
         )
         return PaperCorridorRunner(cfg, runner_cfg)
 
@@ -71,7 +78,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             advancedError="",
         )
         order_logs: list[dict[str, object]] = []
-        runner._place_combo_order = lambda _candidate, _side, _limit: trade  # type: ignore[method-assign]
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
         runner._log_order = lambda record: order_logs.append(record)  # type: ignore[method-assign]
 
         action = ActionRecord(
@@ -264,6 +271,60 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         self.assertTrue(runner.logger.paths["test_summary_csv"].exists())
         self.assertTrue(runner.logger.paths["test_summary_txt"].exists())
 
+    @patch("corridor.execution.paper.send_discord_text_alert")
+    def test_write_state_snapshot_can_send_discord_summary(self, discord_mock) -> None:
+        runner = self.make_runner(paper_execution=False, discord_summary=True)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        runner.history = pd.DataFrame(
+            [
+                {
+                    "timestamp": pd.Timestamp("2026-03-31 14:30:00", tz="UTC"),
+                    "symbol": "SPY",
+                    "open": 630.0,
+                    "high": 631.0,
+                    "low": 629.0,
+                    "close": 630.5,
+                    "volume": 1000.0,
+                }
+            ]
+        )
+        runner.history_seed_status = "History seed successful."
+
+        runner._write_state_snapshot()
+
+        discord_mock.assert_called_once()
+        sent_message = discord_mock.call_args.args[1]
+        self.assertIn("Discord Paper Summary", sent_message)
+        self.assertIn("Paper Test Summary", sent_message)
+
+    @patch("corridor.execution.paper.send_discord_text_alert")
+    def test_identical_discord_summary_is_throttled(self, discord_mock) -> None:
+        runner = self.make_runner(
+            paper_execution=False,
+            discord_summary=True,
+            discord_summary_min_interval_minutes=30,
+        )
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        daily_report = {
+            "report_date": "2026-04-15",
+            "candidate_count": 1,
+            "candidate_status": "Loaded 1 candidate butterflies for the current center.",
+            "paper_smoke_mode": False,
+        }
+        summary_payload = {
+            "overall_status": "PASS",
+            "filled_orders_today": 0,
+            "open_positions_count": 0,
+            "latest_state": "IDLE",
+            "latest_regime": "RANGE",
+        }
+        summary_text = "Paper Test Summary | PASS | 2026-04-15 | SPY\n"
+
+        runner._maybe_send_discord_test_summary(daily_report, summary_payload, summary_text)
+        runner._maybe_send_discord_test_summary(daily_report, summary_payload, summary_text)
+
+        discord_mock.assert_called_once()
+
     def test_daily_report_aggregates_fill_quality_metrics(self) -> None:
         runner = self.make_runner(paper_execution=False)
         now = pd.Timestamp.utcnow().floor("min")
@@ -382,7 +443,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             log=[SimpleNamespace(message="still working")],
             advancedError="",
         )
-        runner._place_combo_order = lambda _candidate, _side, _limit: trade  # type: ignore[method-assign]
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
 
         action = ActionRecord(
             timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
@@ -402,6 +463,97 @@ class PaperCorridorRunnerTests(unittest.TestCase):
 
         self.assertNotIn(5, runner.positions)
 
+    def test_smoke_mode_can_open_without_range_regime(self) -> None:
+        runner = self.make_runner(paper_execution=False, paper_smoke_mode=True)
+        runner.history = pd.DataFrame(
+            [
+                {
+                    "timestamp": pd.Timestamp("2026-04-15 14:00:00", tz="UTC") + pd.Timedelta(minutes=5 * index),
+                    "symbol": "SPY",
+                    "open": 630.0,
+                    "high": 631.0,
+                    "low": 629.0,
+                    "close": 630.5,
+                    "volume": 1000.0,
+                }
+                for index in range(runner.required_warmup_bars)
+            ]
+        )
+        runner.machine.context.session_date = "2026-04-15"
+        runner._select_candidate = lambda _target_body, **_kwargs: self.make_candidate()  # type: ignore[method-assign]
+        row = pd.Series(
+            {
+                "timestamp": pd.Timestamp("2026-04-15 14:45:00", tz="UTC"),
+                "symbol": "SPY",
+                "open": 630.0,
+                "high": 631.0,
+                "low": 629.0,
+                "close": 630.5,
+                "volume": 1000.0,
+            }
+        )
+
+        runner._process_smoke_mode_bar(
+            row,
+            regime=SimpleNamespace(regime=Regime.TREND_UP),
+            center=SimpleNamespace(center_price=635.0),
+            allow_orders=True,
+            emit_logs=False,
+        )
+
+        self.assertEqual(len(runner.positions), 1)
+        opened = next(iter(runner.positions.values()))
+        self.assertEqual(opened.source_action, ActionType.SMOKE_ENTRY.value)
+
+    def test_smoke_mode_forces_timed_close(self) -> None:
+        runner = self.make_runner(
+            paper_execution=True,
+            paper_smoke_mode=True,
+            smoke_force_close_minutes=45,
+        )
+        candidate = self.make_candidate()
+        opened_at = pd.Timestamp("2026-04-15 13:45:00", tz="UTC")
+        runner.positions[2] = ManagedPosition(
+            layer_id=2,
+            candidate=candidate,
+            quantity=1,
+            opened_at=opened_at,
+            open_limit=0.81,
+            open_status="Filled",
+            source_action=ActionType.SMOKE_ENTRY.value,
+        )
+        trade = SimpleNamespace(
+            orderStatus=SimpleNamespace(status="Filled", avgFillPrice=0.70),
+            order=SimpleNamespace(orderId=88),
+            fillAudit={"steps": [{"step": 1, "status": "Filled"}]},
+            log=[],
+            advancedError="",
+        )
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
+        runner.machine.context.current_center = 635.0
+
+        row = pd.Series(
+            {
+                "timestamp": pd.Timestamp("2026-04-15 14:35:00", tz="UTC"),
+                "symbol": "SPY",
+                "open": 630.0,
+                "high": 631.0,
+                "low": 629.0,
+                "close": 630.5,
+                "volume": 1000.0,
+            }
+        )
+
+        runner._process_smoke_mode_bar(
+            row,
+            regime=SimpleNamespace(regime=Regime.RANGE),
+            center=SimpleNamespace(center_price=635.0),
+            allow_orders=True,
+            emit_logs=False,
+        )
+
+        self.assertFalse(runner.positions)
+
     def test_open_position_sends_discord_alert_once_for_filled_paper_open(self) -> None:
         runner = self.make_runner(paper_execution=True)
         runner.discord_webhook_url = "https://discord.test/webhook"
@@ -415,7 +567,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             log=[],
             advancedError="",
         )
-        runner._place_combo_order = lambda _candidate, _side, _limit: trade  # type: ignore[method-assign]
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
         action = ActionRecord(
             timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
             symbol="SPY",
@@ -525,7 +677,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
                 candidate = self.make_candidate()
                 runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
                 runner._log_order = lambda _record: None  # type: ignore[method-assign]
-                runner._place_combo_order = lambda _candidate, _side, _limit, trade=trade: trade  # type: ignore[method-assign]
+                runner._place_combo_order = lambda *_args, trade=trade, **_kwargs: trade  # type: ignore[method-assign]
 
                 with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
                     runner._open_position(action, center, regime)
@@ -545,7 +697,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             log=[],
             advancedError="",
         )
-        runner._place_combo_order = lambda _candidate, _side, _limit: trade  # type: ignore[method-assign]
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
         action = ActionRecord(
             timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
             symbol="SPY",
@@ -975,7 +1127,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
 
         self.assertEqual(
             lines[0],
-            "Position 5 | SPY 20260401 CALL | qty=1 | strikes=630.0/635.0/640.0 | combo_entry=0.82 | combo_now=1.15 | combo_pnl=$+33.00",
+            "Position 5 | sleeve=main | SPY 20260401 CALL | qty=1 | strikes=630.0/635.0/640.0 | combo_entry=0.82 | combo_now=1.15 | combo_pnl=$+33.00",
         )
         self.assertEqual(lines[1], "+1x 630.0 | entry=1.15 | current=1.25 | pnl=$+10.00")
         self.assertEqual(lines[2], "-2x 635.0 | entry=0.40 | current=0.35 | pnl=$+10.00")

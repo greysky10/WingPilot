@@ -41,6 +41,25 @@ class ButterflySelectorTests(unittest.TestCase):
         self.assertEqual(candidates[0].body_strike, 600.0)
         self.assertLess(candidates[0].spread_ratio, candidates[1].spread_ratio)
 
+    def test_selector_can_target_offset_body_when_center_is_shifted(self) -> None:
+        cfg = CorridorConfig(
+            butterfly_width=5.0,
+            center_rounding=5.0,
+            max_acceptable_option_spread=0.6,
+            candidate_body_search_steps=2,
+        )
+        quotes = [
+            OptionQuote("SPY", "2025-01-17", 600.0, "CALL", 5.8, 5.9, 5.85, 0.2),
+            OptionQuote("SPY", "2025-01-17", 605.0, "CALL", 3.0, 3.1, 3.05, 0.2),
+            OptionQuote("SPY", "2025-01-17", 610.0, "CALL", 1.2, 1.3, 1.25, 0.2),
+            OptionQuote("SPY", "2025-01-17", 605.0, "PUT", 1.0, 1.1, 1.05, 0.2),
+        ]
+
+        candidates = select_butterflies(quotes, center_price=605.0, width=5.0, config=cfg)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].body_strike, 605.0)
+
     def test_selector_returns_diagnostics_for_rejected_candidates(self) -> None:
         cfg = CorridorConfig(
             butterfly_width=5.0,

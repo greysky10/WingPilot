@@ -150,6 +150,26 @@ class CorridorStateMachineTests(unittest.TestCase):
         self.assertEqual(layer.lower_strike, 70.0)
         self.assertEqual(layer.upper_strike, 150.0)
 
+    def test_body_strike_offset_applies_to_opened_layer(self) -> None:
+        cfg = CorridorConfig(
+            butterfly_width=10.0,
+            center_rounding=5.0,
+            body_strike_offset_points=5.0,
+            max_active_butterfly_layers=1,
+        )
+        machine = CorridorStateMachine(cfg)
+        range_snapshot = RegimeSnapshot(self.base_ts, Regime.RANGE, 0.01, 0.0, 0.0, 1.0, False, False)
+
+        machine.process_bar("SPY", self.base_ts, 100.0, range_snapshot, self.center)
+        layer = machine.context.active_layers[0]
+
+        self.assertEqual(layer.center_price, 105.0)
+        self.assertEqual(layer.body_strike, 105.0)
+        self.assertEqual(layer.lower_strike, 95.0)
+        self.assertEqual(layer.upper_strike, 115.0)
+        self.assertEqual(layer.metadata["selection_center_price"], 100.0)
+        self.assertEqual(layer.metadata["body_strike_offset_points"], 5.0)
+
     def test_idle_entry_respects_gap_day_block(self) -> None:
         cfg = CorridorConfig(
             center_tolerance=2.0,
