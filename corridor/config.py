@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from .models import CenterMethod
 
@@ -22,6 +23,7 @@ class CorridorConfig:
     butterfly_width: float = 10.0
     wing_mode: str = "symmetric"
     broken_wing_extra_width: float = 0.0
+    option_right_preference: str = "call"
     coverage_band_width: float = 20.0
     center_tolerance: float = 2.5
     center_tolerance_atr_multiplier: float = 1.0
@@ -36,19 +38,31 @@ class CorridorConfig:
     primary_entry_min_center_confidence: float = 0.0
     primary_entry_max_momentum_pct: float = 1.0
     primary_entry_max_volume_ratio: float = 999.0
+    skip_entry_weekdays: tuple[str, ...] = field(default_factory=tuple)
     skip_event_days: bool = False
     event_dates: tuple[str, ...] = field(default_factory=tuple)
+    skip_gap_days: bool = False
+    max_entry_gap_pct: float = 0.0
     abort_volume_threshold: float = 2.2
     abort_momentum_threshold: float = 0.01
     primary_stop_loss_pct: float = 0.0
     primary_take_profit_pct: float = 0.0
+    block_same_day_reentry_after_take_profit: bool = False
     hold_overnight: bool = False
     max_hold_sessions: int = 0
     close_when_dte_lte: int = 0
     dte_min: int = 4
     dte_max: int = 10
     default_dte: int = 7
+    layer_dte_targets: tuple[int, ...] = field(default_factory=tuple)
+    layer_exit_scope: str = "all"
+    allow_daily_entry_additions: bool = False
     max_acceptable_option_spread: float = 0.25
+    near_spread_dte_max: int = 0
+    near_max_acceptable_option_spread: float = 0.0
+    mid_max_acceptable_option_spread: float = 0.0
+    far_spread_dte_min: int = 0
+    far_max_acceptable_option_spread: float = 0.0
     per_contract_slippage: float = 0.05
     # Deprecated alias kept for backward compatibility with older configs/tests.
     slippage: float = 0.03
@@ -59,6 +73,8 @@ class CorridorConfig:
     payoff_mode: str = "simplified"
     synthetic_chain_state_path: str = ""
     synthetic_chain_report_path: str = ""
+    historical_chain_path: str = ""
+    historical_chain_price_field: str = "close"
     simplified_entry_debit_pct_of_width: float = 0.22
     simplified_peak_value_pct_of_width: float = 0.85
     simplified_residual_floor_pct: float = 0.05
@@ -90,3 +106,33 @@ class CorridorConfig:
 
     def time_window_label(self) -> str:
         return f"{self.valid_trading_start}-{self.valid_trading_end}"
+
+    def max_acceptable_option_spread_for_dte(self, dte: Optional[int]) -> float:
+        base_cap = max(0.0, float(self.max_acceptable_option_spread))
+        if dte is None:
+            return base_cap
+
+        near_cutoff = max(0, int(self.near_spread_dte_max))
+        far_cutoff = max(0, int(self.far_spread_dte_min))
+        near_cap = (
+            max(0.0, float(self.near_max_acceptable_option_spread))
+            if float(self.near_max_acceptable_option_spread) > 0.0
+            else base_cap
+        )
+        mid_cap = (
+            max(0.0, float(self.mid_max_acceptable_option_spread))
+            if float(self.mid_max_acceptable_option_spread) > 0.0
+            else base_cap
+        )
+        far_cap = (
+            max(0.0, float(self.far_max_acceptable_option_spread))
+            if float(self.far_max_acceptable_option_spread) > 0.0
+            else base_cap
+        )
+
+        value = max(0, int(dte))
+        if near_cutoff > 0 and value <= near_cutoff:
+            return near_cap
+        if far_cutoff > 0 and value >= far_cutoff:
+            return far_cap
+        return mid_cap

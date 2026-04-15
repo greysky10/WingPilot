@@ -40,8 +40,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--payoff-mode",
         default="underlying_only",
-        choices=["underlying_only", "simplified", "synthetic_chain"],
-        help="Use underlying-only decision logging, the simplified butterfly payoff model, or a synthetic chain model calibrated from current live-paper SPXW quotes.",
+        choices=["underlying_only", "simplified", "synthetic_chain", "historical_chain"],
+        help=(
+            "Use underlying-only decision logging, the simplified butterfly payoff model, a synthetic chain model "
+            "calibrated from current live-paper SPXW quotes, or a saved historical chain dataset."
+        ),
     )
     parser.add_argument("--output-dir", default="", help="Optional output directory.")
     parser.add_argument("--client-id", type=int, default=41, help="IB client id when fetching from IBKR.")
@@ -50,12 +53,23 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--option-multiplier", type=int, default=100, help="Option contract multiplier for dollar conversion.")
     parser.add_argument("--per-contract-slippage", type=float, default=0.05, help="Modeled per-contract slippage in option points for each open/close action.")
     parser.add_argument("--max-option-spread", type=float, default=0.25, help="Absolute combo-spread cap in option points, aligned with the paper runner filter.")
+    parser.add_argument("--near-spread-dte-max", type=int, default=0, help="If set, expiries at or below this DTE use --near-max-option-spread.")
+    parser.add_argument("--near-max-option-spread", type=float, default=0.0, help="Absolute spread cap for nearer-DTE entries. Set 0 to reuse --max-option-spread.")
+    parser.add_argument("--mid-max-option-spread", type=float, default=0.0, help="Absolute spread cap for middle-DTE entries between the near and far buckets. Set 0 to reuse --max-option-spread.")
+    parser.add_argument("--far-spread-dte-min", type=int, default=0, help="If set, expiries at or above this DTE use --far-max-option-spread.")
+    parser.add_argument("--far-max-option-spread", type=float, default=0.0, help="Absolute spread cap for farther-DTE entries. Set 0 to reuse --max-option-spread.")
     parser.add_argument("--butterfly-width", type=float, default=10.0, help="Butterfly wing width in strike points.")
     parser.add_argument(
         "--wing-mode",
         default="symmetric",
         choices=["symmetric", "broken_upper", "broken_lower", "adaptive"],
         help="Strike geometry mode for the modeled butterfly.",
+    )
+    parser.add_argument(
+        "--option-right",
+        default="call",
+        choices=["call", "put", "auto"],
+        help="Option side preference for chain-based candidate selection.",
     )
     parser.add_argument(
         "--broken-wing-extra-width",
@@ -75,16 +89,43 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--primary-entry-min-center-confidence", type=float, default=0.0, help="Minimum center confidence required for a new primary entry.")
     parser.add_argument("--primary-entry-max-momentum-pct", type=float, default=1.0, help="Maximum absolute momentum_pct allowed for a new primary entry.")
     parser.add_argument("--primary-entry-max-volume-ratio", type=float, default=999.0, help="Maximum volume_ratio allowed for a new primary entry.")
+    parser.add_argument("--skip-entry-weekdays", default="", help="Comma-separated New York weekdays to block for new entries, for example mon,fri.")
     parser.add_argument("--skip-event-days", action="store_true", help="Block new primary entries on configured event dates.")
     parser.add_argument("--event-dates", default="", help="Comma-separated New York dates to block, for example 2026-04-10,2026-05-06.")
+    parser.add_argument("--skip-gap-days", action="store_true", help="Block new primary entries when the session gap exceeds --max-entry-gap-pct.")
+    parser.add_argument("--max-entry-gap-pct", type=float, default=0.0, help="Maximum absolute session gap percentage allowed for a new primary entry. Set 0 to disable.")
     parser.add_argument("--primary-stop-loss-pct", type=float, default=0.0, help="Protective stop-loss threshold for the primary layer, measured as a fraction of entry cost.")
     parser.add_argument("--primary-take-profit-pct", type=float, default=0.0, help="Take-profit threshold for the primary layer, measured as a fraction of entry cost.")
+    parser.add_argument("--block-same-day-reentry-after-take-profit", action="store_true", help="After a take-profit closes exposure, block fresh entries for the rest of that New York session.")
     parser.add_argument("--hold-overnight", action="store_true", help="Do not force session-end flattening in the state machine.")
     parser.add_argument("--max-hold-sessions", type=int, default=0, help="Close the primary position after this many trading sessions. Set 0 to disable.")
     parser.add_argument("--close-when-dte-lte", type=int, default=0, help="Close the primary position when remaining calendar DTE is less than or equal to this threshold. Set 0 to disable.")
+    parser.add_argument("--dte-min", type=int, default=4, help="Minimum calendar DTE allowed for option selection in chain-based payoff modes.")
+    parser.add_argument("--dte-max", type=int, default=10, help="Maximum calendar DTE allowed for option selection in chain-based payoff modes.")
     parser.add_argument("--default-dte", type=int, default=7, help="Modeled DTE attached to newly opened layers in the backtest state machine.")
+    parser.add_argument(
+        "--layer-dte-targets",
+        default="",
+        help="Optional comma-separated DTE ladder opened together on entry/rebuild, for example 21,28,35. Empty keeps single-DTE behavior.",
+    )
+    parser.add_argument(
+        "--layer-exit-scope",
+        default="all",
+        choices=["all", "individual"],
+        help="Close all active layers from the primary signal, or close each layer independently.",
+    )
+    parser.add_argument(
+        "--allow-daily-entry-additions",
+        action="store_true",
+        help="When positions are already open overnight, allow one new entry batch on later sessions if the primary entry filter passes and layer capacity remains.",
+    )
     parser.add_argument("--synthetic-chain-state-json", default="", help="Optional paper_state.json used to calibrate synthetic-chain pricing. Defaults to corridor_outputs/paper_runner/<SYMBOL>/paper_state.json.")
     parser.add_argument("--synthetic-chain-report-json", default="", help="Optional paper_daily_report.json used to calibrate synthetic-chain spread behavior. Defaults to corridor_outputs/paper_runner/<SYMBOL>/paper_daily_report.json.")
+    parser.add_argument(
+        "--historical-chain-path",
+        default="",
+        help="Optional CSV/parquet dataset produced by run_massive_spx_backfill.py for historical_chain payoff mode.",
+    )
     parser.add_argument(
         "--stress-profile",
         default="none",
@@ -106,6 +147,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def build_config(args: argparse.Namespace) -> CorridorConfig:
+    parsed_layer_dtes = tuple(
+        max(1, int(item.strip()))
+        for item in str(args.layer_dte_targets or "").split(",")
+        if item.strip()
+    )
+    max_layers = max(1, int(args.max_layers), len(parsed_layer_dtes))
     cfg = CorridorConfig(
         symbol=args.symbol.upper(),
         timeframe=args.timeframe,
@@ -115,6 +162,7 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         butterfly_width=max(1.0, float(args.butterfly_width)),
         wing_mode=str(args.wing_mode),
         broken_wing_extra_width=max(0.0, float(args.broken_wing_extra_width)),
+        option_right_preference=str(args.option_right),
         coverage_band_width=max(2.0, float(args.coverage_band_width)),
         center_tolerance=max(0.5, float(args.center_tolerance)),
         center_tolerance_atr_multiplier=max(0.0, float(args.center_tolerance_atr_multiplier)),
@@ -122,19 +170,27 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         recenter_threshold=max(0.5, float(args.recenter_threshold)),
         drift_persistence_bars=max(1, int(args.drift_persistence_bars)),
         rebuild_cooldown_minutes=max(0, int(args.rebuild_cooldown_minutes)),
-        max_active_butterfly_layers=max(1, int(args.max_layers)),
+        max_active_butterfly_layers=max_layers,
         primary_entry_end=args.primary_entry_end,
         primary_entry_min_center_confidence=max(0.0, min(1.0, float(args.primary_entry_min_center_confidence))),
         primary_entry_max_momentum_pct=max(0.0, float(args.primary_entry_max_momentum_pct)),
         primary_entry_max_volume_ratio=max(0.0, float(args.primary_entry_max_volume_ratio)),
+        skip_entry_weekdays=tuple(
+            item.strip().lower()
+            for item in str(args.skip_entry_weekdays or "").split(",")
+            if item.strip()
+        ),
         skip_event_days=bool(args.skip_event_days),
         event_dates=tuple(
             item.strip()
             for item in str(args.event_dates or "").split(",")
             if item.strip()
         ),
+        skip_gap_days=bool(args.skip_gap_days),
+        max_entry_gap_pct=max(0.0, float(args.max_entry_gap_pct)),
         primary_stop_loss_pct=max(0.0, float(args.primary_stop_loss_pct)),
         primary_take_profit_pct=max(0.0, float(args.primary_take_profit_pct)),
+        block_same_day_reentry_after_take_profit=bool(args.block_same_day_reentry_after_take_profit),
         payoff_mode=str(args.payoff_mode),
         ib_host=os.getenv("IB_HOST", "127.0.0.1"),
         ib_port=int(os.getenv("IB_PORT", "4001")),
@@ -143,15 +199,26 @@ def build_config(args: argparse.Namespace) -> CorridorConfig:
         contracts_per_layer=max(1, int(args.contracts_per_layer)),
         option_multiplier=max(1, int(args.option_multiplier)),
         max_acceptable_option_spread=max(0.0, float(args.max_option_spread)),
+        near_spread_dte_max=max(0, int(args.near_spread_dte_max)),
+        near_max_acceptable_option_spread=max(0.0, float(args.near_max_option_spread)),
+        mid_max_acceptable_option_spread=max(0.0, float(args.mid_max_option_spread)),
+        far_spread_dte_min=max(0, int(args.far_spread_dte_min)),
+        far_max_acceptable_option_spread=max(0.0, float(args.far_max_option_spread)),
         per_contract_slippage=max(0.0, float(args.per_contract_slippage)),
         slippage=max(0.0, float(args.per_contract_slippage)),
         stress_profile=args.stress_profile,
         hold_overnight=bool(args.hold_overnight),
         max_hold_sessions=max(0, int(args.max_hold_sessions)),
         close_when_dte_lte=max(0, int(args.close_when_dte_lte)),
+        dte_min=max(0, int(args.dte_min)),
+        dte_max=max(max(0, int(args.dte_min)), int(args.dte_max)),
         default_dte=max(1, int(args.default_dte)),
+        layer_dte_targets=parsed_layer_dtes,
+        layer_exit_scope=str(args.layer_exit_scope),
+        allow_daily_entry_additions=bool(args.allow_daily_entry_additions),
         synthetic_chain_state_path=str(args.synthetic_chain_state_json or ""),
         synthetic_chain_report_path=str(args.synthetic_chain_report_json or ""),
+        historical_chain_path=str(args.historical_chain_path or ""),
     )
     _apply_stress_profile(cfg, args.stress_profile)
     if args.paper_diagnostics_json:
@@ -291,19 +358,40 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"slippage_mult={cfg.stress_slippage_multiplier:.2f} | "
         f"close_haircut={cfg.stress_close_value_haircut_pct:.0%}"
     )
+    mid_reference_dte = None
+    if int(cfg.near_spread_dte_max or 0) > 0 and int(cfg.far_spread_dte_min or 0) > int(cfg.near_spread_dte_max or 0) + 1:
+        mid_reference_dte = int(cfg.near_spread_dte_max or 0) + 1
+    elif int(cfg.far_spread_dte_min or 0) > 0:
+        mid_reference_dte = max(1, int(cfg.far_spread_dte_min or 0) - 1)
+    else:
+        mid_reference_dte = cfg.default_dte
+    spread_schedule_label = (
+        f"near<={int(cfg.near_spread_dte_max or 0)}:{cfg.max_acceptable_option_spread_for_dte(cfg.near_spread_dte_max or None):.2f},"
+        f"mid:{cfg.max_acceptable_option_spread_for_dte(mid_reference_dte):.2f},"
+        f"far>={int(cfg.far_spread_dte_min or 0)}:{cfg.max_acceptable_option_spread_for_dte(cfg.far_spread_dte_min or None):.2f}"
+    )
     print(
         "Controls | "
         f"wing_mode={cfg.wing_mode} | "
+        f"option_right={cfg.option_right_preference} | "
         f"broken_extra={cfg.broken_wing_extra_width:.2f} | "
         f"default_dte={cfg.default_dte} | "
+        f"layer_dte_targets={','.join(str(value) for value in cfg.layer_dte_targets) if cfg.layer_dte_targets else 'single'} | "
+        f"layer_exit_scope={cfg.layer_exit_scope} | "
+        f"allow_daily_entry_additions={cfg.allow_daily_entry_additions} | "
         f"max_option_spread={cfg.max_acceptable_option_spread:.2f} | "
+        f"spread_schedule={spread_schedule_label} | "
         f"max_layers={cfg.max_active_butterfly_layers} | "
         f"primary_entry_end={cfg.primary_entry_end} | "
+        f"skip_entry_weekdays={','.join(cfg.skip_entry_weekdays) if cfg.skip_entry_weekdays else 'none'} | "
         f"atr_mult={cfg.center_tolerance_atr_multiplier:.2f} | "
         f"atr_lookback={cfg.atr_lookback} | "
         f"min_center_conf={cfg.primary_entry_min_center_confidence:.2f} | "
         f"max_entry_momentum={cfg.primary_entry_max_momentum_pct:.4f} | "
         f"max_entry_volume={cfg.primary_entry_max_volume_ratio:.2f} | "
+        f"skip_event_days={cfg.skip_event_days} | "
+        f"skip_gap_days={cfg.skip_gap_days} | "
+        f"max_entry_gap_pct={cfg.max_entry_gap_pct:.2%} | "
         f"primary_stop={cfg.primary_stop_loss_pct:.0%} | "
         f"primary_take_profit={cfg.primary_take_profit_pct:.0%}"
     )

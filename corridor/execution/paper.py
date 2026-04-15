@@ -4,6 +4,7 @@ from collections import Counter
 import csv
 import json
 import math
+import os
 import socket
 import time
 from configparser import ConfigParser
@@ -16,8 +17,9 @@ import pandas as pd
 from corridor.config import CorridorConfig
 from corridor.data.ib_contracts import build_option_contract, build_underlying_contract
 from corridor.models import ActiveButterfly, ActionRecord, ActionType, CorridorState, LayerKind, Regime
+from corridor.notifications.discord import send_discord_json_alert, send_discord_text_alert
 from corridor.options.butterfly_selector import ButterflyCandidate, select_butterflies_with_diagnostics
-from corridor.options.chain_loader import IBOptionChainLoader
+from corridor.options.chain_loader import IBOptionChainLoader, OptionQuote
 from corridor.options.combo_builder import ComboLegSpec, build_butterfly_combo
 from corridor.strategy.center_estimator import CenterEstimator
 from corridor.strategy.corridor_state_machine import CorridorStateMachine
@@ -67,6 +69,7 @@ class ManagedPosition:
     open_status: str
     source_action: str
     open_fill_price: Optional[float] = None
+    entry_leg_prices: Optional[dict[str, float]] = None
     layer_kind: str = LayerKind.PRIMARY.value
     order_id: Optional[int] = None
     close_order_id: Optional[int] = None
@@ -96,6 +99,11 @@ def managed_position_to_payload(position: ManagedPosition) -> dict[str, Any]:
         "opened_at": position.opened_at.isoformat(),
         "open_limit": position.open_limit,
         "open_fill_price": position.open_fill_price,
+        "entry_leg_prices": (
+            {str(key): float(value) for key, value in position.entry_leg_prices.items()}
+            if position.entry_leg_prices
+            else None
+        ),
         "open_status": position.open_status,
         "source_action": position.source_action,
         "layer_kind": position.layer_kind,
@@ -155,6 +163,13 @@ def managed_position_from_payload(payload: dict[str, Any]) -> ManagedPosition:
         opened_at=_ensure_utc_timestamp(pd.Timestamp(payload["opened_at"])),
         open_limit=float(payload.get("open_limit", 0.0) or 0.0),
         open_fill_price=_coerce_optional_float(payload.get("open_fill_price")),
+        entry_leg_prices=(
+            {
+                str(key): float(value)
+                for key, value in dict(payload.get("entry_leg_prices") or {}).items()
+            }
+            or None
+        ),
         open_status=str(payload.get("open_status", "")),
         source_action=str(payload.get("source_action", "")),
         layer_kind=str(payload.get("layer_kind", LayerKind.PRIMARY.value)),
@@ -245,6 +260,12 @@ def _format_optional_dollar(value: Optional[float]) -> str:
     if value is None:
         return "n/a"
     return f"${value:.2f}"
+
+
+def _format_optional_price(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.2f}"
 
 
 def _format_signed_dollar(value: float) -> str:
@@ -546,6 +567,7 @@ class PaperCorridorRunner:
         self.estimator = CenterEstimator(corridor_cfg)
         self.machine = CorridorStateMachine(corridor_cfg)
         self.logger = CsvEventLogger(runner_cfg.output_dir, runner_cfg.log_prefix)
+        self.discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
         self.history = pd.DataFrame(columns=["timestamp", "symbol", "open", "high", "low", "close", "volume"])
         self.underlying_contract = None
         self.last_processed_ts: Optional[pd.Timestamp] = None
@@ -687,6 +709,17 @@ class PaperCorridorRunner:
                 self.machine.context.state = CorridorState.IDLE
             self.machine.context.current_center = _coerce_optional_float(payload.get("current_center"))
             self.machine.context.next_layer_id = int(payload.get("next_layer_id", 1) or 1)
+        restored_last_entry = str(payload.get("last_primary_entry_session_date") or "").strip()
+        if restored_last_entry:
+            self.machine.context.last_primary_entry_session_date = restored_last_entry
+        restored_last_take_profit = str(payload.get("last_take_profit_session_date") or "").strip()
+        if restored_last_take_profit:
+            self.machine.context.last_take_profit_session_date = restored_last_take_profit
+        elif self.positions:
+            primary = self._primary_position()
+            if primary is not None:
+                opened_local = _ensure_utc_timestamp(primary.opened_at).tz_convert("America/New_York").date().isoformat()
+                self.machine.context.last_primary_entry_session_date = opened_local
         print(
             f"Loaded {len(self.positions)} recovered paper position(s) from "
             f"{self.logger.paths['recovery'].name}."
@@ -791,10 +824,12 @@ class PaperCorridorRunner:
         if eligible.empty:
             self._refresh_positions_from_account()
             self._retry_pending_session_closes()
-            print(
+            message = (
                 f"No new completed bars. | ts={_log_timestamp_now()}"
                 f"{self._intraday_pnl_log_suffix()}"
             )
+            print(message)
+            self._maybe_send_discord_log_alert(message)
             self._write_state_snapshot()
             return
 
@@ -1124,6 +1159,8 @@ class PaperCorridorRunner:
         price = float(row["close"])
         regime = self.detector.evaluate(self.history)
         center = self.estimator.estimate(self.history)
+        bar_open = float(row["open"]) if "open" in row and pd.notna(row["open"]) else None
+        self.machine.sync_session_context(timestamp, price, bar_open)
         protective_exit = self._protective_exit_signal(timestamp, price)
         if protective_exit is not None:
             action_type, detail, extra_metadata = protective_exit
@@ -1137,7 +1174,7 @@ class PaperCorridorRunner:
                 extra_metadata=extra_metadata,
             )
         else:
-            step = self.machine.process_bar(self.cfg.symbol, timestamp, price, regime, center)
+            step = self.machine.process_bar(self.cfg.symbol, timestamp, price, regime, center, bar_open=bar_open)
 
         for transition in step.transitions:
             if emit_logs:
@@ -1321,7 +1358,8 @@ class PaperCorridorRunner:
             return
 
         target_body = float(action.metadata.get("body_strike") or action.metadata.get("center_price") or action.center_price or 0.0)
-        candidate = self._select_candidate(target_body)
+        target_dte = int(action.metadata.get("configured_target_dte") or self.cfg.default_dte)
+        candidate = self._select_candidate(target_body, target_dte=target_dte, reference_ts=action.timestamp)
         if candidate is None:
             self._rollback_unfilled_open(action.layer_id)
             self._log_order(
@@ -1333,6 +1371,7 @@ class PaperCorridorRunner:
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
                     "status": "skipped",
                     "reason": "No candidate butterfly matched the corridor center.",
+                    "target_dte": target_dte,
                 }
             )
             return
@@ -1348,6 +1387,8 @@ class PaperCorridorRunner:
                     "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
                     "status": "skipped",
                     "reason": candidate_issue,
+                    "target_dte": target_dte,
+                    "calendar_dte": candidate.calendar_dte,
                     "expiry": candidate.expiry,
                     "right": candidate.right,
                     "lower_strike": candidate.lower_strike,
@@ -1385,6 +1426,8 @@ class PaperCorridorRunner:
                         "status": status,
                         "order_id": order_id,
                         "quantity": self.runner_cfg.quantity,
+                        "target_dte": target_dte,
+                        "calendar_dte": candidate.calendar_dte,
                         "expiry": candidate.expiry,
                         "trading_class": candidate.trading_class,
                         "right": candidate.right,
@@ -1420,6 +1463,8 @@ class PaperCorridorRunner:
                         "status": status,
                         "order_id": order_id,
                         "quantity": self.runner_cfg.quantity,
+                        "target_dte": target_dte,
+                        "calendar_dte": candidate.calendar_dte,
                         "expiry": candidate.expiry,
                         "trading_class": candidate.trading_class,
                         "right": candidate.right,
@@ -1440,6 +1485,7 @@ class PaperCorridorRunner:
         else:
             fill_audit = None
 
+        entry_leg_prices = self._capture_entry_leg_prices(candidate)
         self.positions[action.layer_id] = ManagedPosition(
             layer_id=action.layer_id,
             candidate=candidate,
@@ -1449,6 +1495,7 @@ class PaperCorridorRunner:
             open_status=status,
             source_action=action.action.value,
             open_fill_price=open_fill_price,
+            entry_leg_prices=entry_leg_prices,
             layer_kind=str(action.metadata.get("kind", LayerKind.PRIMARY.value)),
             order_id=order_id,
         )
@@ -1462,6 +1509,8 @@ class PaperCorridorRunner:
                 "status": status,
                 "order_id": order_id,
                 "quantity": self.runner_cfg.quantity,
+                "target_dte": target_dte,
+                "calendar_dte": candidate.calendar_dte,
                 "expiry": candidate.expiry,
                 "right": candidate.right,
                 "lower_strike": candidate.lower_strike,
@@ -1475,6 +1524,14 @@ class PaperCorridorRunner:
                 "total_spread": round(candidate.total_spread, 4),
                 "reason": action.detail,
             }
+        )
+        self._maybe_send_open_discord_alert(
+            action,
+            status=status,
+            order_id=order_id,
+            limit_price=limit_price,
+            open_fill_price=open_fill_price,
+            fill_audit=fill_audit,
         )
 
     def _close_position(self, action: ActionRecord) -> None:
@@ -1591,18 +1648,71 @@ class PaperCorridorRunner:
             position.closed_at = action.timestamp
             del self.positions[position.layer_id]
 
-    def _select_candidate(self, target_body: float) -> Optional[ButterflyCandidate]:
-        candidates = self._load_candidates(target_body)
+    def _maybe_send_open_discord_alert(
+        self,
+        action: ActionRecord,
+        *,
+        status: str,
+        order_id: Optional[int],
+        limit_price: float,
+        open_fill_price: Optional[float],
+        fill_audit: Optional[dict[str, Any]],
+    ) -> None:
+        if not self.runner_cfg.paper_execution:
+            return
+        if str(status).lower() != "filled":
+            return
+        if open_fill_price is None:
+            return
+        if action.layer_id is None or action.layer_id not in self.positions:
+            return
+        if not self.discord_webhook_url:
+            return
+
+        position = self.positions[action.layer_id]
+        candidate = position.candidate
+        payload: dict[str, Any] = {
+            "symbol": candidate.symbol,
+            "expiry": candidate.expiry,
+            "lower_strike": candidate.lower_strike,
+            "body_strike": candidate.body_strike,
+            "upper_strike": candidate.upper_strike,
+            "wing_mode": candidate.wing_mode,
+            "net_debit": round(float(candidate.net_debit), 4),
+            "max_risk": round(float(candidate.max_risk), 2),
+            "max_reward": round(float(candidate.max_reward), 2),
+            "timestamp": position.opened_at.isoformat(),
+            "status": status,
+            "layer_id": position.layer_id,
+            "quantity": position.quantity,
+            "order_id": order_id,
+            "limit_price": round(float(limit_price), 2),
+            "fill_price": round(float(open_fill_price), 4),
+            "mode": "paper",
+        }
+        if fill_audit is not None:
+            payload["fill_audit"] = fill_audit
+
+        send_discord_json_alert(self.discord_webhook_url, payload)
+
+    def _select_candidate(
+        self,
+        target_body: float,
+        *,
+        target_dte: Optional[int] = None,
+        reference_ts: Optional[pd.Timestamp] = None,
+    ) -> Optional[ButterflyCandidate]:
+        candidates = self._load_candidates(target_body, target_dte=target_dte, reference_ts=reference_ts)
         if not candidates:
             return None
         if self.cfg.wing_mode != "adaptive":
-            chosen = self._best_candidate(candidates, target_body)
+            chosen = self._best_candidate(candidates, target_body, target_dte=target_dte)
             self._record_selected_wing(chosen)
             return chosen
 
         symmetric = [candidate for candidate in candidates if candidate.wing_mode == "symmetric"]
         broken = [candidate for candidate in candidates if candidate.wing_mode != "symmetric"]
-        best_symmetric = self._best_candidate(symmetric, target_body)
+        best_symmetric = self._best_candidate(symmetric, target_body, target_dte=target_dte)
         symmetric_issue = self._candidate_execution_issue(best_symmetric) if best_symmetric is not None else None
         if best_symmetric is not None and symmetric_issue is None:
             self._record_selected_wing(best_symmetric)
@@ -1611,10 +1721,10 @@ class PaperCorridorRunner:
             self.wing_stats["guard_fails"] += 1
         safe_broken = [candidate for candidate in broken if self._candidate_execution_issue(candidate) is None]
         if safe_broken:
-            chosen = self._best_candidate(safe_broken, target_body)
+            chosen = self._best_candidate(safe_broken, target_body, target_dte=target_dte)
             self._record_selected_wing(chosen)
             return chosen
-        chosen = best_symmetric or self._best_candidate(candidates, target_body)
+        chosen = best_symmetric or self._best_candidate(candidates, target_body, target_dte=target_dte)
         self._record_selected_wing(chosen)
         return chosen
 
@@ -1627,12 +1737,18 @@ class PaperCorridorRunner:
         self.wing_stats[wing_mode] += 1
 
     @staticmethod
-    def _best_candidate(candidates: list[ButterflyCandidate], target_body: float) -> Optional[ButterflyCandidate]:
+    def _best_candidate(
+        candidates: list[ButterflyCandidate],
+        target_body: float,
+        *,
+        target_dte: Optional[int] = None,
+    ) -> Optional[ButterflyCandidate]:
         if not candidates:
             return None
         return min(
             candidates,
             key=lambda candidate: (
+                abs((candidate.calendar_dte if candidate.calendar_dte is not None else target_dte or 0) - int(target_dte or 0)),
                 abs(candidate.body_strike - target_body),
                 0 if candidate.wing_mode == "symmetric" else 1,
                 candidate.spread_ratio,
@@ -1641,12 +1757,28 @@ class PaperCorridorRunner:
             ),
         )
 
-    def _load_candidates(self, target_body: float) -> list[ButterflyCandidate]:
-        candidates, diagnostics = self._load_candidates_with_diagnostics(target_body)
+    def _load_candidates(
+        self,
+        target_body: float,
+        *,
+        target_dte: Optional[int] = None,
+        reference_ts: Optional[pd.Timestamp] = None,
+    ) -> list[ButterflyCandidate]:
+        candidates, diagnostics = self._load_candidates_with_diagnostics(
+            target_body,
+            target_dte=target_dte,
+            reference_ts=reference_ts,
+        )
         self.latest_candidate_diagnostics = diagnostics
         return candidates
 
-    def _load_candidates_with_diagnostics(self, target_body: float) -> tuple[list[ButterflyCandidate], dict[str, Any]]:
+    def _load_candidates_with_diagnostics(
+        self,
+        target_body: float,
+        *,
+        target_dte: Optional[int] = None,
+        reference_ts: Optional[pd.Timestamp] = None,
+    ) -> tuple[list[ButterflyCandidate], dict[str, Any]]:
         loader = IBOptionChainLoader(
             self.runner_cfg.host,
             self.runner_cfg.port,
@@ -1666,9 +1798,19 @@ class PaperCorridorRunner:
             center_rounding=self.cfg.center_rounding,
             market_data_type=self.market_data_type,
         )
-        candidates, diagnostics = select_butterflies_with_diagnostics(quotes, target_body, self.cfg.butterfly_width, self.cfg)
+        reference_date = None
+        if reference_ts is not None:
+            reference_date = _ensure_utc_timestamp(pd.Timestamp(reference_ts)).tz_convert("America/New_York").date()
+        candidates, diagnostics = select_butterflies_with_diagnostics(
+            quotes,
+            target_body,
+            self.cfg.butterfly_width,
+            self.cfg,
+            reference_date=reference_date,
+        )
         diagnostic_payload = {
             "target_body": round(float(target_body), 4),
+            "target_dte": int(target_dte) if target_dte is not None else None,
             "available_quotes": int(diagnostics.available_quotes),
             "expiries_considered": int(diagnostics.expiries_considered),
             "call_bodies_considered": int(diagnostics.call_bodies_considered),
@@ -1679,7 +1821,8 @@ class PaperCorridorRunner:
         return candidates, diagnostic_payload
 
     def _combo_limit_price(self, candidate: ButterflyCandidate, side: str) -> float:
-        spread_buffer = min(max(0.01, candidate.total_spread * 0.25), max(0.02, self.cfg.max_acceptable_option_spread))
+        spread_cap = self._max_spread_cap_for_candidate(candidate)
+        spread_buffer = min(max(0.01, candidate.total_spread * 0.25), max(0.02, spread_cap))
         if side == "BUY":
             return max(0.01, round(candidate.net_debit + spread_buffer, 2))
         return max(0.01, round(max(0.01, candidate.net_debit - spread_buffer), 2))
@@ -1861,6 +2004,12 @@ class PaperCorridorRunner:
             return "Candidate net debit is non-positive."
         if candidate.total_spread <= 0:
             return "Candidate total spread is non-positive."
+        allowed_spread = self._max_spread_cap_for_candidate(candidate)
+        if candidate.total_spread > allowed_spread:
+            return (
+                f"Candidate total spread {candidate.total_spread:.2f} exceeds "
+                f"max_option_spread={allowed_spread:.2f} for dte={candidate.calendar_dte if candidate.calendar_dte is not None else 'unknown'}."
+            )
         spread_ratio = candidate.total_spread / max(candidate.net_debit, 0.01)
         if spread_ratio > self.runner_cfg.max_spread_pct_of_debit:
             return (
@@ -1868,6 +2017,9 @@ class PaperCorridorRunner:
                 f"max_spread_pct_of_debit={self.runner_cfg.max_spread_pct_of_debit:.2f}."
             )
         return None
+
+    def _max_spread_cap_for_candidate(self, candidate: ButterflyCandidate) -> float:
+        return float(self.cfg.max_acceptable_option_spread_for_dte(candidate.calendar_dte))
 
     @staticmethod
     def _order_pricing_fields(
@@ -1913,7 +2065,7 @@ class PaperCorridorRunner:
             payload["fill_edge_vs_limit"] = None
         return payload
 
-    def _refresh_candidate_quote(self, candidate: ButterflyCandidate) -> Optional[ButterflyCandidate]:
+    def _load_structure_quote_map(self, candidate: ButterflyCandidate) -> Optional[dict[float, OptionQuote]]:
         loader = IBOptionChainLoader(
             self.runner_cfg.host,
             self.runner_cfg.port,
@@ -1937,6 +2089,18 @@ class PaperCorridorRunner:
         if len(quotes) != 3:
             return None
         by_strike = {float(quote.strike): quote for quote in quotes}
+        lower = by_strike.get(float(candidate.lower_strike))
+        body = by_strike.get(float(candidate.body_strike))
+        upper = by_strike.get(float(candidate.upper_strike))
+        if lower is None or body is None or upper is None:
+            return None
+        return by_strike
+
+    @staticmethod
+    def _candidate_from_structure_quote_map(
+        candidate: ButterflyCandidate,
+        by_strike: dict[float, OptionQuote],
+    ) -> Optional[ButterflyCandidate]:
         lower = by_strike.get(float(candidate.lower_strike))
         body = by_strike.get(float(candidate.body_strike))
         upper = by_strike.get(float(candidate.upper_strike))
@@ -1969,6 +2133,31 @@ class PaperCorridorRunner:
             reward_to_risk=max(0.0, (reward_width - net_debit) * 100.0) / max(max(0.0, (net_debit + extra_tail_risk) * 100.0), 0.01),
             body_distance=candidate.body_distance,
         )
+
+    def _refresh_candidate_quote(self, candidate: ButterflyCandidate) -> Optional[ButterflyCandidate]:
+        quote_map = self._load_structure_quote_map(candidate)
+        if quote_map is None:
+            return None
+        return self._candidate_from_structure_quote_map(candidate, quote_map)
+
+    def _capture_entry_leg_prices(self, candidate: ButterflyCandidate) -> Optional[dict[str, float]]:
+        if not self.ib.isConnected():
+            return None
+        quote_map = self._load_structure_quote_map(candidate)
+        if quote_map is None:
+            return None
+        lower = quote_map.get(float(candidate.lower_strike))
+        body = quote_map.get(float(candidate.body_strike))
+        upper = quote_map.get(float(candidate.upper_strike))
+        if lower is None or body is None or upper is None:
+            return None
+        if lower.mid <= 0 or body.mid <= 0 or upper.mid <= 0:
+            return None
+        return {
+            "lower": round(float(lower.mid), 4),
+            "body": round(float(body.mid), 4),
+            "upper": round(float(upper.mid), 4),
+        }
 
     def _guard_startup_account_state(self) -> None:
         if not self.runner_cfg.paper_execution or self.runner_cfg.check_only:
@@ -2061,6 +2250,8 @@ class PaperCorridorRunner:
             "state": self.machine.context.state.value,
             "current_center": current_center,
             "next_layer_id": self.machine.context.next_layer_id,
+            "last_primary_entry_session_date": self.machine.context.last_primary_entry_session_date,
+            "last_take_profit_session_date": self.machine.context.last_take_profit_session_date,
             "positions": [
                 managed_position_to_payload(position)
                 for position in sorted(self.positions.values(), key=lambda item: item.layer_id)
@@ -2233,6 +2424,185 @@ class PaperCorridorRunner:
             return
         self.last_outage_notice = message
         print(message)
+
+    @staticmethod
+    def _position_leg_definitions(position: ManagedPosition) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "lower",
+                "strike": float(position.candidate.lower_strike),
+                "coefficient": 1,
+                "signed_quantity": int(position.quantity),
+            },
+            {
+                "name": "body",
+                "strike": float(position.candidate.body_strike),
+                "coefficient": -2,
+                "signed_quantity": -2 * int(position.quantity),
+            },
+            {
+                "name": "upper",
+                "strike": float(position.candidate.upper_strike),
+                "coefficient": 1,
+                "signed_quantity": int(position.quantity),
+            },
+        ]
+
+    @staticmethod
+    def _normalize_option_average_cost(
+        avg_cost: float,
+        multiplier: float,
+        reference_price: Optional[float],
+    ) -> Optional[float]:
+        raw = abs(float(avg_cost or 0.0))
+        if raw <= 0:
+            return None
+        candidates = [raw]
+        if multiplier > 1:
+            candidates.append(raw / multiplier)
+        valid = [value for value in candidates if value > 0]
+        if not valid:
+            return None
+        if reference_price is not None and reference_price > 0:
+            return min(valid, key=lambda value: abs(value - reference_price))
+        if multiplier > 1 and raw >= multiplier:
+            return raw / multiplier
+        return raw
+
+    def _account_option_average_costs(self) -> dict[tuple[str, float, str], tuple[float, float]]:
+        if not self.runner_cfg.paper_execution or not self.ib.isConnected():
+            return {}
+        costs: dict[tuple[str, float, str], tuple[float, float]] = {}
+        try:
+            positions = self.ib.positions()
+        except Exception:
+            return costs
+        for account_position in positions:
+            contract = getattr(account_position, "contract", None)
+            if contract is None:
+                continue
+            if getattr(contract, "symbol", "").upper() != self.cfg.symbol.upper():
+                continue
+            if getattr(contract, "secType", "") != "OPT":
+                continue
+            quantity = int(round(float(getattr(account_position, "position", 0.0) or 0.0)))
+            if quantity == 0:
+                continue
+            avg_cost = float(getattr(account_position, "avgCost", 0.0) or 0.0)
+            multiplier = float(getattr(contract, "multiplier", 100.0) or 100.0)
+            costs[self._option_leg_key(contract)] = (avg_cost, multiplier)
+        return costs
+
+    def _build_discord_position_detail_lines(self) -> list[str]:
+        if not self.positions:
+            return []
+        account_avg_costs = self._account_option_average_costs()
+        ordered_positions = sorted(
+            self.positions.values(),
+            key=lambda item: (
+                0 if item.layer_kind == LayerKind.PRIMARY.value else 1,
+                item.layer_id,
+            ),
+        )
+        lines: list[str] = []
+        for index, position in enumerate(ordered_positions):
+            lines.extend(self._build_discord_position_lines(position, account_avg_costs))
+            if index < len(ordered_positions) - 1:
+                lines.append("")
+        return lines
+
+    def _build_discord_position_lines(
+        self,
+        position: ManagedPosition,
+        account_avg_costs: dict[tuple[str, float, str], tuple[float, float]],
+    ) -> list[str]:
+        quote_map = self._load_structure_quote_map(position.candidate)
+        if quote_map is not None:
+            live_candidate = self._candidate_from_structure_quote_map(position.candidate, quote_map)
+            if live_candidate is not None:
+                position.candidate = live_candidate
+
+        right_code = "C" if position.candidate.right == "CALL" else "P"
+        combo_current = None
+        if quote_map is not None:
+            lower = quote_map.get(float(position.candidate.lower_strike))
+            body = quote_map.get(float(position.candidate.body_strike))
+            upper = quote_map.get(float(position.candidate.upper_strike))
+            if lower is not None and body is not None and upper is not None:
+                combo_current = round(lower.mid - (2.0 * body.mid) + upper.mid, 4)
+
+        combo_entry = None
+        combo_pnl_dollars = None
+        leg_lines: list[str] = []
+        derived_combo_entry = 0.0
+        derived_entry_complete = True
+        for leg in self._position_leg_definitions(position):
+            strike = float(leg["strike"])
+            current_price = None
+            if quote_map is not None:
+                quote = quote_map.get(strike)
+                if quote is not None and quote.mid > 0:
+                    current_price = round(float(quote.mid), 4)
+            key = (position.candidate.expiry, strike, right_code)
+            entry_price = None
+            account_cost = account_avg_costs.get(key)
+            if account_cost is not None:
+                entry_price = self._normalize_option_average_cost(
+                    account_cost[0],
+                    account_cost[1],
+                    current_price,
+                )
+            if entry_price is None and position.entry_leg_prices:
+                entry_price = _coerce_optional_float(position.entry_leg_prices.get(str(leg["name"])))
+            if entry_price is not None:
+                entry_price = round(float(entry_price), 4)
+                derived_combo_entry += float(leg["coefficient"]) * entry_price
+            else:
+                derived_entry_complete = False
+            pnl_dollars = None
+            if entry_price is not None and current_price is not None:
+                pnl_dollars = round(
+                    (float(current_price) - float(entry_price))
+                    * 100.0
+                    * float(leg["signed_quantity"]),
+                    2,
+                )
+            signed_quantity = int(leg["signed_quantity"])
+            pnl_label = "n/a" if pnl_dollars is None else _format_signed_dollar(pnl_dollars)
+            leg_lines.append(
+                f"{signed_quantity:+d}x {strike:.1f} | entry={_format_optional_price(entry_price)}"
+                f" | current={_format_optional_price(current_price)}"
+                f" | pnl={pnl_label}"
+            )
+
+        if derived_entry_complete:
+            combo_entry = round(derived_combo_entry, 4)
+        else:
+            fallback_entry = self._position_entry_basis(position)
+            if fallback_entry > 0:
+                combo_entry = round(float(fallback_entry), 4)
+        if combo_entry is not None and combo_current is not None:
+            combo_pnl_dollars = round(
+                (float(combo_current) - float(combo_entry)) * 100.0 * float(position.quantity),
+                2,
+            )
+        combo_pnl_label = "n/a" if combo_pnl_dollars is None else _format_signed_dollar(combo_pnl_dollars)
+        header = (
+            f"Position {position.layer_id} | {position.candidate.symbol} {position.candidate.expiry}"
+            f" {position.candidate.right} | qty={position.quantity}"
+            f" | strikes={position.candidate.lower_strike:.1f}/{position.candidate.body_strike:.1f}/{position.candidate.upper_strike:.1f}"
+            f" | combo_entry={_format_optional_price(combo_entry)}"
+            f" | combo_now={_format_optional_price(combo_current)}"
+            f" | combo_pnl={combo_pnl_label}"
+        )
+        return [header, *leg_lines]
+
+    def _maybe_send_discord_log_alert(self, message: str) -> None:
+        if not self.discord_webhook_url:
+            return
+        detail_lines = self._build_discord_position_detail_lines()
+        payload = message if not detail_lines else message + "\n" + "\n".join(detail_lines)
+        send_discord_text_alert(self.discord_webhook_url, payload)
 
     def _long_butterfly_leg_specs(self, qualified_contracts) -> list[ComboLegSpec]:
         return [

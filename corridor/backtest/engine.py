@@ -9,6 +9,7 @@ from corridor.backtest.metrics import compute_metrics
 from corridor.config import CorridorConfig
 from corridor.models import ActionRecord, ActionType, ActiveButterfly, CorridorState, EquityPoint, Regime
 from corridor.options.butterfly_pricer import SimplifiedButterflyPricer
+from corridor.options.historical_chain import HistoricalChainButterflyPricer
 from corridor.options.synthetic_chain import SyntheticChainButterflyPricer
 from corridor.strategy.center_estimator import CenterEstimator
 from corridor.strategy.corridor_state_machine import CorridorStateMachine
@@ -35,6 +36,8 @@ class CorridorBacktestEngine:
             self.pricer = SimplifiedButterflyPricer(config)
         elif config.payoff_mode == "synthetic_chain":
             self.pricer = SyntheticChainButterflyPricer.from_config(config)
+        elif config.payoff_mode == "historical_chain":
+            self.pricer = HistoricalChainButterflyPricer.from_config(config)
         else:
             self.pricer = None
 
@@ -53,10 +56,21 @@ class CorridorBacktestEngine:
             symbol = str(row["symbol"]).upper()
             regime = self.detector.evaluate(history)
             center = self.center_estimator.estimate(history)
+            bar_open = float(row["open"]) if "open" in row and pd.notna(row["open"]) else None
+            self.state_machine.sync_session_context(timestamp, price, bar_open)
 
             prior_layers = {layer.layer_id: layer for layer in self.state_machine.context.active_layers}
-            protective_exit = self._protective_exit_signal(timestamp, price, history)
-            if protective_exit is not None:
+            individual_exits = self._protective_exit_signals(timestamp, price, history)
+            protective_exit = None if individual_exits else self._protective_exit_signal(timestamp, price, history)
+            if individual_exits:
+                step = self.state_machine.close_layers(
+                    symbol,
+                    timestamp,
+                    price,
+                    individual_exits,
+                    regime,
+                )
+            elif protective_exit is not None:
                 action_type, detail, extra_metadata = protective_exit
                 step = self.state_machine.flatten_positions(
                     symbol,
@@ -68,7 +82,14 @@ class CorridorBacktestEngine:
                     extra_metadata=extra_metadata,
                 )
             else:
-                step = self.state_machine.process_bar(symbol, timestamp, price, regime, center)
+                step = self.state_machine.process_bar(
+                    symbol,
+                    timestamp,
+                    price,
+                    regime,
+                    center,
+                    bar_open=bar_open,
+                )
             transitions.extend(step.transitions)
 
             current_layers = {layer.layer_id: layer for layer in self.state_machine.context.active_layers}
@@ -77,6 +98,19 @@ class CorridorBacktestEngine:
 
             if self.pricer is not None and opened_ids and self.config.wing_mode == "adaptive":
                 self._apply_adaptive_wing_selection(step.actions, current_layers, opened_ids)
+
+            if self.pricer is not None and opened_ids and self.config.payoff_mode == "historical_chain":
+                opened_ids = self._apply_historical_chain_selection(
+                    symbol,
+                    timestamp,
+                    price,
+                    step.actions,
+                    step.transitions,
+                    current_layers,
+                    opened_ids,
+                )
+                current_layers = {layer.layer_id: layer for layer in self.state_machine.context.active_layers}
+                closed_ids = sorted(set(prior_layers) - set(current_layers))
 
             if (
                 self.pricer is not None
@@ -112,7 +146,7 @@ class CorridorBacktestEngine:
             if self.pricer is not None:
                 for layer_id in opened_ids:
                     layer = current_layers[layer_id]
-                    paper_spread_entry_penalty = self._paper_spread_tax_per_side()
+                    paper_spread_entry_penalty = self._paper_spread_tax_per_side(layer)
                     layer.entry_debit = self.pricer.entry_debit(layer)
                     layer.entry_friction_cost = self.pricer.friction_per_layer(layer) + paper_spread_entry_penalty
                     layer.entry_cost = layer.entry_debit + layer.entry_friction_cost
@@ -120,7 +154,7 @@ class CorridorBacktestEngine:
                     layer.metadata["entry_slippage_cost"] = self.pricer.slippage_cost_per_layer(layer)
                     layer.metadata["entry_commission_cost"] = self.pricer.commission_cost_per_layer()
                     layer.metadata["paper_spread_entry_penalty"] = paper_spread_entry_penalty
-                    layer.metadata["paper_spread_close_penalty"] = self._paper_spread_tax_per_side()
+                    layer.metadata["paper_spread_close_penalty"] = self._paper_spread_tax_per_side(layer)
                     layer.metadata["paper_spread_penalty_round_trip"] = (
                         layer.metadata["paper_spread_entry_penalty"] + layer.metadata["paper_spread_close_penalty"]
                     )
@@ -145,7 +179,9 @@ class CorridorBacktestEngine:
                 for layer_id in closed_ids:
                     layer = prior_layers[layer_id]
                     gross_close_value = self.pricer.mark_to_model(layer, price, timestamp)
-                    paper_spread_close_penalty = float(layer.metadata.get("paper_spread_close_penalty", self._paper_spread_tax_per_side()))
+                    paper_spread_close_penalty = float(
+                        layer.metadata.get("paper_spread_close_penalty", self._paper_spread_tax_per_side(layer))
+                    )
                     close_friction = self.pricer.friction_per_layer(layer) + paper_spread_close_penalty
                     close_value = self.pricer.close_value(layer, price, timestamp) - paper_spread_close_penalty
                     layer.exit_value = close_value
@@ -239,38 +275,71 @@ class CorridorBacktestEngine:
             return None
 
         primary = self._primary_layer(self.state_machine.context.active_layers)
-        if primary is None or primary.entry_cost <= 0:
+        return None if primary is None else self._protective_exit_for_layer(primary, timestamp, price, history, primary_only=True)
+
+    def _protective_exit_signals(
+        self,
+        timestamp: pd.Timestamp,
+        price: float,
+        history: pd.DataFrame,
+    ) -> list[tuple[int, ActionType, str, dict[str, float | str]]]:
+        if self.pricer is None:
+            return []
+        if str(self.config.layer_exit_scope).lower() != "individual":
+            return []
+
+        signals: list[tuple[int, ActionType, str, dict[str, float | str]]] = []
+        for layer in self.state_machine.context.active_layers:
+            signal = self._protective_exit_for_layer(layer, timestamp, price, history, primary_only=False)
+            if signal is None:
+                continue
+            action_type, detail, metadata = signal
+            signals.append((layer.layer_id, action_type, detail, metadata))
+        return signals
+
+    def _protective_exit_for_layer(
+        self,
+        layer: ActiveButterfly,
+        timestamp: pd.Timestamp,
+        price: float,
+        history: pd.DataFrame,
+        *,
+        primary_only: bool,
+    ) -> tuple[ActionType, str, dict[str, float | str]] | None:
+        if layer.entry_cost <= 0:
             return None
 
-        close_value = self.pricer.close_value(primary, price, timestamp)
-        return_pct = (close_value - primary.entry_cost) / primary.entry_cost
+        close_value = self.pricer.close_value(layer, price, timestamp)
+        return_pct = (close_value - layer.entry_cost) / layer.entry_cost
+        subject = "Primary" if primary_only else f"Layer {layer.layer_id}"
+        return_key = "primary_return_pct" if primary_only else "layer_return_pct"
 
         if self.config.primary_stop_loss_pct > 0 and return_pct <= -self.config.primary_stop_loss_pct:
             return (
                 ActionType.STOP_LOSS,
-                "Primary stop-loss reached.",
-                {"primary_return_pct": round(return_pct, 4)},
+                f"{subject} stop-loss reached.",
+                {return_key: round(return_pct, 4)},
             )
         if self.config.primary_take_profit_pct > 0 and return_pct >= self.config.primary_take_profit_pct:
             return (
                 ActionType.TAKE_PROFIT,
-                "Primary take-profit reached.",
-                {"primary_return_pct": round(return_pct, 4)},
+                f"{subject} take-profit reached.",
+                {return_key: round(return_pct, 4)},
             )
         if self.config.close_when_dte_lte > 0:
-            remaining_dte = self._remaining_dte_calendar_days(primary, timestamp)
+            remaining_dte = self._remaining_dte_calendar_days(layer, timestamp)
             if remaining_dte <= self.config.close_when_dte_lte:
                 return (
                     ActionType.MAX_HOLD,
-                    f"Max-hold DTE threshold reached (remaining_dte={remaining_dte}).",
+                    f"{subject} DTE threshold reached (remaining_dte={remaining_dte}).",
                     {"remaining_dte": int(remaining_dte)},
                 )
         if self.config.max_hold_sessions > 0:
-            sessions_held = self._held_session_count(primary, timestamp, history)
+            sessions_held = self._held_session_count(layer, timestamp, history)
             if sessions_held >= self.config.max_hold_sessions:
                 return (
                     ActionType.MAX_HOLD,
-                    f"Max-hold session threshold reached (sessions_held={sessions_held}).",
+                    f"{subject} max-hold session threshold reached (sessions_held={sessions_held}).",
                     {"sessions_held": int(sessions_held)},
                 )
         return None
@@ -325,7 +394,8 @@ class CorridorBacktestEngine:
                 float(self.config.paper_spread_gate_total_spread),
                 float(entry_debit) * float(self.config.paper_spread_gate_spread_ratio),
             )
-            if estimated_total_spread <= float(self.config.max_acceptable_option_spread):
+            spread_cap = self._max_spread_cap_for_layer(layer)
+            if estimated_total_spread <= spread_cap:
                 kept_ids.append(layer_id)
                 continue
 
@@ -341,7 +411,7 @@ class CorridorBacktestEngine:
                     "entry_debit_estimate": round(entry_debit, 4),
                     "estimated_total_spread": round(estimated_total_spread, 4),
                     "estimated_spread_ratio": round(estimated_total_spread / max(float(entry_debit), 0.01), 4),
-                    "max_acceptable_option_spread": round(float(self.config.max_acceptable_option_spread), 4),
+                    "max_acceptable_option_spread": round(float(spread_cap), 4),
                     "paper_spread_gate_source": self.config.paper_spread_gate_source,
                     "paper_spread_gate_sample_count": int(self.config.paper_spread_gate_sample_count),
                     "paper_spread_gate_rejection_count": int(self.config.paper_spread_gate_rejection_count),
@@ -405,7 +475,7 @@ class CorridorBacktestEngine:
         if not variants:
             return None, {}
 
-        cap = float(self.config.max_acceptable_option_spread)
+        cap = self._max_spread_cap_for_layer(layer)
         evaluations: dict[str, dict[str, float]] = {}
         for wing_mode, variant in variants.items():
             estimated_spread = float(self.pricer.estimated_total_spread(variant))
@@ -523,7 +593,8 @@ class CorridorBacktestEngine:
             if layer is None:
                 continue
             estimated_spread = self.pricer.estimated_total_spread(layer)
-            if estimated_spread <= float(self.config.max_acceptable_option_spread):
+            spread_cap = self._max_spread_cap_for_layer(layer)
+            if estimated_spread <= spread_cap:
                 kept_ids.append(layer_id)
                 continue
 
@@ -539,7 +610,7 @@ class CorridorBacktestEngine:
                     "entry_debit_estimate": round(self.pricer.entry_debit(layer), 4),
                     "estimated_total_spread": round(estimated_spread, 4),
                     "estimated_spread_ratio": round(self.pricer.estimated_spread_ratio(layer), 4),
-                    "max_acceptable_option_spread": round(float(self.config.max_acceptable_option_spread), 4),
+                    "max_acceptable_option_spread": round(float(spread_cap), 4),
                     "synthetic_chain_state_path": self.config.synthetic_chain_state_path,
                     "synthetic_chain_report_path": self.config.synthetic_chain_report_path,
                 }
@@ -559,6 +630,88 @@ class CorridorBacktestEngine:
             )
         return kept_ids
 
+    def _apply_historical_chain_selection(
+        self,
+        symbol: str,
+        timestamp: pd.Timestamp,
+        price: float,
+        actions: list[ActionRecord],
+        transitions: list,
+        current_layers: dict[int, ActiveButterfly],
+        opened_ids: list[int],
+    ) -> list[int]:
+        if not isinstance(self.pricer, HistoricalChainButterflyPricer):
+            return opened_ids
+
+        kept_ids: list[int] = []
+        for layer_id in opened_ids:
+            layer = current_layers.get(layer_id)
+            if layer is None:
+                continue
+
+            selection = self.pricer.attach_candidate(layer, symbol, timestamp)
+            if selection is None:
+                source_action = self._pop_open_action(actions, layer_id)
+                self.state_machine.context.active_layers = [
+                    active for active in self.state_machine.context.active_layers if active.layer_id != layer_id
+                ]
+                self._rollback_filtered_entry_state(source_action, transitions)
+                metadata = self._layer_metadata(layer)
+                metadata.update(
+                    {
+                        "source_action": source_action.action.value if source_action is not None else "UNKNOWN",
+                        "historical_chain_path": self.config.historical_chain_path,
+                        "historical_chain_price_field": self.config.historical_chain_price_field,
+                        "historical_chain_trade_date": timestamp.tz_convert("America/New_York").strftime("%Y-%m-%d")
+                        if timestamp.tzinfo is not None
+                        else timestamp.tz_localize("UTC").tz_convert("America/New_York").strftime("%Y-%m-%d"),
+                    }
+                )
+                actions.append(
+                    ActionRecord(
+                        timestamp=timestamp,
+                        symbol=symbol,
+                        action=ActionType.ENTRY_FILTERED,
+                        state=self.state_machine.context.state,
+                        price=price,
+                        center_price=self.state_machine.context.current_center,
+                        layer_id=layer.layer_id,
+                        detail="Historical chain selection found no matching real contract structure for this entry.",
+                        metadata=metadata,
+                    )
+                )
+                continue
+
+            kept_ids.append(layer_id)
+            self._enrich_action(
+                actions,
+                layer_id,
+                lower_strike=round(layer.lower_strike, 4),
+                body_strike=round(layer.body_strike, 4),
+                upper_strike=round(layer.upper_strike, 4),
+                width=round(layer.width, 4),
+                lower_width=round(layer.lower_width, 4),
+                upper_width=round(layer.upper_width, 4),
+                wing_mode=str(layer.metadata.get("wing_mode", "")),
+                dte=int(layer.dte),
+                historical_chain_expiry=str(layer.metadata.get("historical_chain_expiry", "")),
+                historical_chain_right=str(layer.metadata.get("historical_chain_right", "")),
+                historical_chain_lower_ticker=str(layer.metadata.get("historical_chain_lower_ticker", "")),
+                historical_chain_body_ticker=str(layer.metadata.get("historical_chain_body_ticker", "")),
+                historical_chain_upper_ticker=str(layer.metadata.get("historical_chain_upper_ticker", "")),
+                historical_chain_selected_net_debit=round(
+                    float(layer.metadata.get("historical_chain_selected_net_debit", 0.0)), 4
+                ),
+                historical_chain_selected_total_spread=round(
+                    float(layer.metadata.get("historical_chain_selected_total_spread", 0.0)), 4
+                ),
+                historical_chain_selected_dte=int(layer.metadata.get("historical_chain_selected_dte", layer.dte)),
+                historical_chain_trade_date=str(selection.trade_date),
+                historical_chain_path=self.config.historical_chain_path,
+                historical_chain_price_field=self.config.historical_chain_price_field,
+            )
+        return kept_ids
+
     def _rollback_filtered_entry_state(self, source_action: ActionRecord | None, transitions: list) -> None:
         if source_action is None:
             return
@@ -574,14 +727,19 @@ class CorridorBacktestEngine:
         self.state_machine.context.current_center = None
         self.state_machine.context.drift_count = 0
 
-    def _paper_spread_tax_per_side(self) -> float:
+    def _paper_spread_tax_per_side(self, layer: ActiveButterfly | None = None) -> float:
         if not self.config.paper_spread_gate_enabled or self.config.paper_spread_gate_mode != "tax":
             return 0.0
+        spread_cap = self._max_spread_cap_for_layer(layer)
         round_trip_penalty = max(
             0.0,
-            float(self.config.paper_spread_gate_total_spread) - float(self.config.max_acceptable_option_spread),
+            float(self.config.paper_spread_gate_total_spread) - spread_cap,
         )
         return round_trip_penalty / 2.0
+
+    def _max_spread_cap_for_layer(self, layer: ActiveButterfly | None) -> float:
+        dte = int(layer.dte) if layer is not None else None
+        return float(self.config.max_acceptable_option_spread_for_dte(dte))
 
     @staticmethod
     def _pop_open_action(actions: list[ActionRecord], layer_id: int) -> ActionRecord | None:

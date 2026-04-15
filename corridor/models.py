@@ -118,6 +118,13 @@ class CorridorContext:
     active_layers: list[ActiveButterfly] = field(default_factory=list)
     realized_pnl: float = 0.0
     last_state_change_at: Optional[pd.Timestamp] = None
+    session_date: Optional[str] = None
+    previous_session_close: Optional[float] = None
+    current_session_gap_pct: Optional[float] = None
+    current_session_gap_filtered: bool = False
+    last_processed_close: Optional[float] = None
+    last_primary_entry_session_date: Optional[str] = None
+    last_take_profit_session_date: Optional[str] = None
 
 
 @dataclass(slots=True)

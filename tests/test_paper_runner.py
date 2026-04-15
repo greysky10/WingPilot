@@ -19,6 +19,7 @@ from corridor.execution.paper import (
 )
 from corridor.models import ActionRecord, ActionType, CorridorState, LayerKind, Regime
 from corridor.options.butterfly_selector import ButterflyCandidate
+from corridor.options.chain_loader import OptionQuote
 
 
 class PaperCorridorRunnerTests(unittest.TestCase):
@@ -185,6 +186,24 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         self.assertEqual(len(runner.machine.context.active_layers), 1)
         self.assertEqual(runner.machine.context.active_layers[0].body_strike, 635.0)
 
+    def test_restore_recovery_state_restores_last_primary_entry_session_date(self) -> None:
+        runner = self.make_runner(start_flat=False)
+        runner.logger.write_recovery(
+            {
+                "symbol": "SPY",
+                "saved_at": pd.Timestamp("2026-03-30 17:10:00", tz="UTC").isoformat(),
+                "state": "ACTIVE_CENTERED",
+                "current_center": 635.0,
+                "next_layer_id": 8,
+                "last_primary_entry_session_date": "2026-03-30",
+                "positions": [],
+            }
+        )
+
+        runner._restore_recovery_state()
+
+        self.assertEqual(runner.machine.context.last_primary_entry_session_date, "2026-03-30")
+
     def test_state_snapshot_reports_history_seeded_mode(self) -> None:
         runner = self.make_runner(paper_execution=False)
         runner.history = pd.DataFrame(
@@ -330,6 +349,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
 
     def test_candidate_execution_issue_rejects_wide_spread_ratio(self) -> None:
         runner = self.make_runner(paper_execution=False)
+        runner.cfg.max_acceptable_option_spread = 1.0
         runner.runner_cfg.max_spread_pct_of_debit = 0.40
         bad_candidate = ButterflyCandidate(
             symbol="SPY",
@@ -354,7 +374,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
     def test_open_position_does_not_track_unfilled_combo(self) -> None:
         runner = self.make_runner(paper_execution=True)
         candidate = self.make_candidate()
-        runner._select_candidate = lambda _target_body: candidate  # type: ignore[method-assign]
+        runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
         runner._log_order = lambda _record: None  # type: ignore[method-assign]
         trade = SimpleNamespace(
             orderStatus=SimpleNamespace(status="Submitted"),
@@ -381,6 +401,170 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         runner._open_position(action, center, regime)
 
         self.assertNotIn(5, runner.positions)
+
+    def test_open_position_sends_discord_alert_once_for_filled_paper_open(self) -> None:
+        runner = self.make_runner(paper_execution=True)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        candidate = self.make_candidate()
+        runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
+        runner._log_order = lambda _record: None  # type: ignore[method-assign]
+        trade = SimpleNamespace(
+            orderStatus=SimpleNamespace(status="Filled", avgFillPrice=0.82),
+            order=SimpleNamespace(orderId=42),
+            fillAudit={"steps": [{"step": 1, "status": "Filled"}]},
+            log=[],
+            advancedError="",
+        )
+        runner._place_combo_order = lambda _candidate, _side, _limit: trade  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.ENTER_PRIMARY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=635.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Opened the primary butterfly corridor layer.",
+            metadata={"body_strike": 635.0, "kind": LayerKind.PRIMARY.value},
+        )
+        center = SimpleNamespace(center_price=635.0)
+        regime = SimpleNamespace(regime=Regime.RANGE)
+
+        with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
+            runner._open_position(action, center, regime)
+
+        self.assertIn(5, runner.positions)
+        send_mock.assert_called_once()
+        webhook_url, payload = send_mock.call_args.args
+        self.assertEqual(webhook_url, "https://discord.test/webhook")
+        self.assertEqual(payload["symbol"], "SPY")
+        self.assertEqual(payload["expiry"], "20260401")
+        self.assertEqual(payload["lower_strike"], 630.0)
+        self.assertEqual(payload["body_strike"], 635.0)
+        self.assertEqual(payload["upper_strike"], 640.0)
+        self.assertEqual(payload["wing_mode"], "symmetric")
+        self.assertEqual(payload["net_debit"], 0.75)
+        self.assertEqual(payload["max_risk"], 75.0)
+        self.assertEqual(payload["max_reward"], 425.0)
+        self.assertEqual(payload["timestamp"], "2026-03-30T17:15:00+00:00")
+        self.assertEqual(payload["status"], "Filled")
+        self.assertEqual(payload["layer_id"], 5)
+        self.assertEqual(payload["quantity"], 1)
+        self.assertEqual(payload["order_id"], 42)
+        self.assertEqual(payload["limit_price"], 0.78)
+        self.assertEqual(payload["fill_price"], 0.82)
+        self.assertEqual(payload["mode"], "paper")
+        self.assertEqual(payload["fill_audit"], {"steps": [{"step": 1, "status": "Filled"}]})
+
+    def test_open_position_does_not_send_discord_alert_for_dry_run_open(self) -> None:
+        runner = self.make_runner(paper_execution=False)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        candidate = self.make_candidate()
+        runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
+        runner._log_order = lambda _record: None  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.ENTER_PRIMARY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=635.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Opened the primary butterfly corridor layer.",
+            metadata={"body_strike": 635.0, "kind": LayerKind.PRIMARY.value},
+        )
+        center = SimpleNamespace(center_price=635.0)
+        regime = SimpleNamespace(regime=Regime.RANGE)
+
+        with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
+            runner._open_position(action, center, regime)
+
+        self.assertIn(5, runner.positions)
+        send_mock.assert_not_called()
+
+    def test_open_position_does_not_send_discord_alert_for_rejected_or_unfilled_opens(self) -> None:
+        scenarios = [
+            (
+                "unfilled",
+                SimpleNamespace(
+                    orderStatus=SimpleNamespace(status="Submitted"),
+                    order=SimpleNamespace(orderId=42),
+                    log=[SimpleNamespace(message="still working")],
+                    advancedError="",
+                ),
+            ),
+            (
+                "rejected",
+                SimpleNamespace(
+                    orderStatus=SimpleNamespace(status="Cancelled"),
+                    order=SimpleNamespace(orderId=43),
+                    log=[SimpleNamespace(message="Order rejected")],
+                    advancedError="",
+                ),
+            ),
+        ]
+
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.ENTER_PRIMARY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=635.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Opened the primary butterfly corridor layer.",
+            metadata={"body_strike": 635.0, "kind": LayerKind.PRIMARY.value},
+        )
+        center = SimpleNamespace(center_price=635.0)
+        regime = SimpleNamespace(regime=Regime.RANGE)
+
+        for label, trade in scenarios:
+            with self.subTest(label=label):
+                runner = self.make_runner(paper_execution=True)
+                runner.discord_webhook_url = "https://discord.test/webhook"
+                candidate = self.make_candidate()
+                runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
+                runner._log_order = lambda _record: None  # type: ignore[method-assign]
+                runner._place_combo_order = lambda _candidate, _side, _limit, trade=trade: trade  # type: ignore[method-assign]
+
+                with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
+                    runner._open_position(action, center, regime)
+
+                send_mock.assert_not_called()
+
+    def test_discord_helper_failure_does_not_break_open_position(self) -> None:
+        runner = self.make_runner(paper_execution=True)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        candidate = self.make_candidate()
+        runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
+        runner._log_order = lambda _record: None  # type: ignore[method-assign]
+        trade = SimpleNamespace(
+            orderStatus=SimpleNamespace(status="Filled", avgFillPrice=0.82),
+            order=SimpleNamespace(orderId=42),
+            fillAudit={"steps": [{"step": 1, "status": "Filled"}]},
+            log=[],
+            advancedError="",
+        )
+        runner._place_combo_order = lambda _candidate, _side, _limit: trade  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.ENTER_PRIMARY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=635.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Opened the primary butterfly corridor layer.",
+            metadata={"body_strike": 635.0, "kind": LayerKind.PRIMARY.value},
+        )
+        center = SimpleNamespace(center_price=635.0)
+        regime = SimpleNamespace(regime=Regime.RANGE)
+
+        with patch("corridor.notifications.discord.urllib.request.urlopen", side_effect=OSError("network down")):
+            runner._open_position(action, center, regime)
+
+        self.assertIn(5, runner.positions)
+        self.assertEqual(runner.positions[5].open_status, "Filled")
 
     def test_protective_exit_signal_triggers_take_profit(self) -> None:
         runner = self.make_runner(paper_execution=False)
@@ -471,7 +655,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             wing_mode="broken_upper",
             spread_ratio=0.1333,
         )
-        runner._load_candidates = lambda _target_body: [broken, symmetric]  # type: ignore[method-assign]
+        runner._load_candidates = lambda _target_body, **_kwargs: [broken, symmetric]  # type: ignore[method-assign]
 
         chosen = runner._select_candidate(635.0)
 
@@ -482,6 +666,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         runner = self.make_runner(paper_execution=False)
         runner.cfg.wing_mode = "adaptive"
         runner.cfg.broken_wing_extra_width = 20.0
+        runner.cfg.max_acceptable_option_spread = 1.0
         runner.runner_cfg.max_spread_pct_of_debit = 0.40
         symmetric = ButterflyCandidate(
             symbol="SPY",
@@ -515,7 +700,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             wing_mode="broken_upper",
             spread_ratio=0.1429,
         )
-        runner._load_candidates = lambda _target_body: [symmetric, broken]  # type: ignore[method-assign]
+        runner._load_candidates = lambda _target_body, **_kwargs: [symmetric, broken]  # type: ignore[method-assign]
 
         chosen = runner._select_candidate(635.0)
 
@@ -523,6 +708,63 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         self.assertEqual(chosen.wing_mode, "broken_upper")
         self.assertEqual(runner.wing_stats["broken_upper"], 1)
         self.assertEqual(runner.wing_stats["guard_fails"], 1)
+
+    def test_select_candidate_prefers_target_dte_closest_match(self) -> None:
+        runner = self.make_runner(paper_execution=False)
+        near = ButterflyCandidate(
+            symbol="SPY",
+            expiry="20260401",
+            lower_strike=630.0,
+            body_strike=635.0,
+            upper_strike=640.0,
+            lower_width=5.0,
+            upper_width=5.0,
+            net_debit=0.70,
+            total_spread=0.10,
+            max_risk=70.0,
+            max_reward=430.0,
+            right="CALL",
+            calendar_dte=21,
+        )
+        far = ButterflyCandidate(
+            symbol="SPY",
+            expiry="20260408",
+            lower_strike=630.0,
+            body_strike=635.0,
+            upper_strike=640.0,
+            lower_width=5.0,
+            upper_width=5.0,
+            net_debit=0.70,
+            total_spread=0.10,
+            max_risk=70.0,
+            max_reward=430.0,
+            right="CALL",
+            calendar_dte=28,
+        )
+        runner._load_candidates = lambda _target_body, **_kwargs: [near, far]  # type: ignore[method-assign]
+
+        chosen = runner._select_candidate(635.0, target_dte=28, reference_ts=pd.Timestamp("2026-03-11 14:30:00", tz="UTC"))
+
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.expiry, "20260408")
+
+    def test_candidate_execution_issue_uses_dte_tiered_spread_cap(self) -> None:
+        runner = self.make_runner(paper_execution=False)
+        runner.cfg.max_acceptable_option_spread = 0.20
+        runner.cfg.near_spread_dte_max = 10
+        runner.cfg.near_max_acceptable_option_spread = 0.10
+        runner.cfg.far_spread_dte_min = 20
+        runner.cfg.far_max_acceptable_option_spread = 0.30
+
+        near = self.make_candidate()
+        near.total_spread = 0.16
+        near.calendar_dte = 7
+        far = self.make_candidate()
+        far.total_spread = 0.16
+        far.calendar_dte = 28
+
+        self.assertIn("max_option_spread", runner._candidate_execution_issue(near) or "")
+        self.assertIsNone(runner._candidate_execution_issue(far))
 
     def test_runner_restores_persistent_wing_stats_from_state_snapshot(self) -> None:
         runner = self.make_runner(paper_execution=False)
@@ -675,6 +917,151 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         first_arg = mocked_print.call_args_list[0].args[0]
         self.assertIn("No new completed bars.", first_arg)
         self.assertIn("ts=", first_arg)
+
+    def test_build_discord_position_detail_lines_include_leg_prices_and_pnl(self) -> None:
+        runner = self.make_runner(paper_execution=True)
+        runner.positions[5] = ManagedPosition(
+            layer_id=5,
+            candidate=self.make_candidate(),
+            quantity=1,
+            opened_at=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            open_limit=0.82,
+            open_status="Filled",
+            source_action=ActionType.ENTER_PRIMARY.value,
+            open_fill_price=0.82,
+            entry_leg_prices={"lower": 1.15, "body": 0.40, "upper": 0.47},
+            layer_kind=LayerKind.PRIMARY.value,
+        )
+        quote_map = {
+            630.0: OptionQuote(
+                symbol="SPY",
+                expiry="20260401",
+                strike=630.0,
+                right="CALL",
+                bid=1.20,
+                ask=1.30,
+                last=0.0,
+                implied_vol=None,
+            ),
+            635.0: OptionQuote(
+                symbol="SPY",
+                expiry="20260401",
+                strike=635.0,
+                right="CALL",
+                bid=0.30,
+                ask=0.40,
+                last=0.0,
+                implied_vol=None,
+            ),
+            640.0: OptionQuote(
+                symbol="SPY",
+                expiry="20260401",
+                strike=640.0,
+                right="CALL",
+                bid=0.55,
+                ask=0.65,
+                last=0.0,
+                implied_vol=None,
+            ),
+        }
+        runner._load_structure_quote_map = lambda _candidate: quote_map  # type: ignore[method-assign]
+        runner._account_option_average_costs = lambda: {  # type: ignore[method-assign]
+            ("20260401", 630.0, "C"): (115.0, 100.0),
+            ("20260401", 635.0, "C"): (40.0, 100.0),
+            ("20260401", 640.0, "C"): (47.0, 100.0),
+        }
+
+        lines = runner._build_discord_position_detail_lines()
+
+        self.assertEqual(
+            lines[0],
+            "Position 5 | SPY 20260401 CALL | qty=1 | strikes=630.0/635.0/640.0 | combo_entry=0.82 | combo_now=1.15 | combo_pnl=$+33.00",
+        )
+        self.assertEqual(lines[1], "+1x 630.0 | entry=1.15 | current=1.25 | pnl=$+10.00")
+        self.assertEqual(lines[2], "-2x 635.0 | entry=0.40 | current=0.35 | pnl=$+10.00")
+        self.assertEqual(lines[3], "+1x 640.0 | entry=0.47 | current=0.60 | pnl=$+13.00")
+
+    def test_poll_once_sends_discord_message_when_no_new_completed_bars(self) -> None:
+        runner = self.make_runner(paper_execution=False)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        runner._intraday_pnl_log_suffix = lambda: (  # type: ignore[method-assign]
+            " | today_est_pnl=$+815.00"
+            " | realized=$+0.00"
+            " | unrealized=$+815.00"
+            " | open_positions=1"
+        )
+        ts = pd.Timestamp("2026-03-31 14:30:00", tz="UTC")
+        frame = pd.DataFrame(
+            [
+                {
+                    "timestamp": ts,
+                    "symbol": "SPY",
+                    "open": 630.0,
+                    "high": 631.0,
+                    "low": 629.0,
+                    "close": 630.5,
+                    "volume": 1000.0,
+                }
+            ]
+        )
+        runner.history = frame.copy()
+        runner.last_processed_ts = ts
+        runner.fetch_recent_history = lambda: frame.copy()  # type: ignore[method-assign]
+        runner._refresh_positions_from_account = lambda: None  # type: ignore[method-assign]
+        runner._write_state_snapshot = lambda: None  # type: ignore[method-assign]
+
+        with (
+            patch("builtins.print"),
+            patch("corridor.execution.paper.send_discord_text_alert", return_value=True) as send_mock,
+        ):
+            runner.poll_once()
+
+        send_mock.assert_called_once()
+        webhook_url, message = send_mock.call_args.args
+        self.assertEqual(webhook_url, "https://discord.test/webhook")
+        self.assertIn("No new completed bars.", message)
+        self.assertIn("ts=", message)
+        self.assertIn("today_est_pnl=$+815.00", message)
+        self.assertIn("open_positions=1", message)
+
+    def test_poll_once_appends_position_details_to_discord_message(self) -> None:
+        runner = self.make_runner(paper_execution=False)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        runner._intraday_pnl_log_suffix = lambda: " | today_est_pnl=$+10.00 | realized=$+0.00 | unrealized=$+10.00 | open_positions=1"  # type: ignore[method-assign]
+        runner._build_discord_position_detail_lines = lambda: [  # type: ignore[method-assign]
+            "Position 5 | SPY 20260401 CALL | qty=1 | strikes=630.0/635.0/640.0 | combo_entry=0.82 | combo_now=0.92 | combo_pnl=$+10.00",
+            "+1x 630.0 | entry=1.15 | current=1.20 | pnl=$+5.00",
+        ]
+        ts = pd.Timestamp("2026-03-31 14:30:00", tz="UTC")
+        frame = pd.DataFrame(
+            [
+                {
+                    "timestamp": ts,
+                    "symbol": "SPY",
+                    "open": 630.0,
+                    "high": 631.0,
+                    "low": 629.0,
+                    "close": 630.5,
+                    "volume": 1000.0,
+                }
+            ]
+        )
+        runner.history = frame.copy()
+        runner.last_processed_ts = ts
+        runner.fetch_recent_history = lambda: frame.copy()  # type: ignore[method-assign]
+        runner._refresh_positions_from_account = lambda: None  # type: ignore[method-assign]
+        runner._write_state_snapshot = lambda: None  # type: ignore[method-assign]
+
+        with (
+            patch("builtins.print"),
+            patch("corridor.execution.paper.send_discord_text_alert", return_value=True) as send_mock,
+        ):
+            runner.poll_once()
+
+        message = send_mock.call_args.args[1]
+        self.assertIn("No new completed bars.", message)
+        self.assertIn("Position 5 | SPY 20260401 CALL", message)
+        self.assertIn("+1x 630.0 | entry=1.15 | current=1.20 | pnl=$+5.00", message)
 
 
 if __name__ == "__main__":

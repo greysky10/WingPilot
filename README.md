@@ -18,9 +18,45 @@ The daily SPX path is the main workflow today. It supports backtesting, live-pre
 
 Important limitations:
 
-- Daily and weekly backtests use a simplified butterfly pricer, not historical option-chain replay
+- The daily strategy is the main maintained path; the weekly strategy is still research-grade and backtest-only
+- Daily backtests can run in `underlying_only`, `simplified`, `synthetic_chain`, or `historical_chain` payoff modes, but weekly backtests still use a simplified weekly butterfly pricer
 - Paper execution logs are useful for workflow validation, not proof of live profitability
 - The weekly strategy is not ready for paper/live deployment
+
+## Strategy Summary
+
+### Daily Intraday Corridor
+
+This is the main strategy in the repo today.
+
+- Trade idea: intraday SPX butterfly corridor meant to participate in range behavior rather than trend continuation
+- Regime filter: classify each bar as `RANGE`, `TREND_UP`, `TREND_DOWN`, or `NEUTRAL` from recent width, slope, momentum, and breakout behavior
+- Centering: estimate an intraday center from recent bars using `vwap`, `mean_mid`, or `rolling_poc`, then round that center to the configured strike increment
+- Entry: open a primary butterfly only when the market still looks range-like and entry filters pass, including center confidence, momentum, volume, time-of-day, and optional event-day / gap-day blocks
+- Management: if price drifts toward the corridor edge, the engine can add a supplemental layer; if drift persists, it can rebuild around the new center
+- Abort logic: flatten when the tape stops acting like a range, including breakout-style trend shifts, strong momentum expansion, or heavy volume expansion outside coverage
+- Protective exits: optional stop-loss, take-profit, max-hold-session, DTE, and session-window exits
+
+In paper/live-prep mode, the strategy loads real option-chain quotes, searches for qualifying candidates near the target center, and rejects structures that fail spread or execution-quality limits. The paper command shown later in this README reflects the wider SPX settings you appear to be using most often now, such as `80`-point wings, `160`-point total coverage, tighter entry filters, and explicit stop / take-profit thresholds.
+
+### Weekly Corridor
+
+This is a separate research strategy in `weekly_corridor/`.
+
+- Trade idea: slower weekly SPX butterfly corridor built from a weekly center instead of repeated intraday recentering
+- Timeframe: decision bars are `30-minute` or `60-minute`, not the core daily `5-minute` loop
+- Initial deployment: open a `3-butterfly` weekly corridor centered at `center - spacing`, `center`, and `center + spacing`
+- Adjustment policy: allow at most one additional weekly butterfly after enough drift from the center
+- Exit policy: abort when the week becomes trend-dominant, or force exit by the weekly time / DTE / hold-window rules
+
+### Payoff / Pricing Modes
+
+The daily backtest supports several pricing layers for the same decision logic:
+
+- `underlying_only`: run the corridor state machine and decision logging without an option payoff model
+- `simplified`: use the repo's stylized butterfly payoff model
+- `synthetic_chain`: estimate butterfly pricing from saved paper-runner chain snapshots and spread diagnostics
+- `historical_chain`: attach archived option structures from a local historical chain dataset and mark those combinations through time
 
 ## What The Project Does
 
@@ -133,6 +169,13 @@ py .\run_backtest.py --symbol SPX --bars-csv .\corridor_outputs\spx_grid_center_
 ```
 
 When `--bars-csv` is omitted, the backtest can fetch historical bars from IBKR instead.
+
+Supported daily `--payoff-mode` values are:
+
+- `underlying_only` for decision logging without option pricing
+- `simplified` for the default stylized butterfly pricer
+- `synthetic_chain` for a paper-calibrated spread model
+- `historical_chain` for replay against a local archived option-chain dataset
 
 ### 4. Prepare a live snapshot
 
