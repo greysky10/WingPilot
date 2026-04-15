@@ -275,10 +275,11 @@ class PaperCorridorRunnerTests(unittest.TestCase):
     def test_write_state_snapshot_can_send_discord_summary(self, discord_mock) -> None:
         runner = self.make_runner(paper_execution=False, discord_summary=True)
         runner.discord_webhook_url = "https://discord.test/webhook"
+        now = pd.Timestamp.utcnow().floor("min")
         runner.history = pd.DataFrame(
             [
                 {
-                    "timestamp": pd.Timestamp("2026-03-31 14:30:00", tz="UTC"),
+                    "timestamp": now,
                     "symbol": "SPY",
                     "open": 630.0,
                     "high": 631.0,
@@ -289,6 +290,20 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             ]
         )
         runner.history_seed_status = "History seed successful."
+        runner.logger.write_order(
+            {
+                "timestamp": now.isoformat(),
+                "layer_id": 1,
+                "sleeve_id": "main",
+                "symbol": "SPY",
+                "side": "OPEN",
+                "mode": "paper",
+                "status": "Filled",
+                "fill_audit": json.dumps({"steps": [{"step": 1, "status": "Filled"}]}),
+                "spread_ratio": 0.10,
+                "fill_edge_vs_quote": -0.01,
+            }
+        )
 
         runner._write_state_snapshot()
 
@@ -296,6 +311,8 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         sent_message = discord_mock.call_args.args[1]
         self.assertIn("Discord Paper Summary", sent_message)
         self.assertIn("Paper Test Summary", sent_message)
+        self.assertIn("Sleeves:", sent_message)
+        self.assertIn("Chase Audit:", sent_message)
 
     @patch("corridor.execution.paper.send_discord_text_alert")
     def test_identical_discord_summary_is_throttled(self, discord_mock) -> None:
@@ -346,6 +363,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             {
                 "timestamp": now.isoformat(),
                 "layer_id": 1,
+                "sleeve_id": "main",
                 "symbol": "SPY",
                 "side": "OPEN",
                 "mode": "paper",
@@ -359,6 +377,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
                 "upper_strike": 640.0,
                 "limit_price": 0.82,
                 "fill_price": 0.80,
+                "fill_audit": json.dumps({"steps": [{"step": 1, "status": "Filled"}]}),
                 "quote_reference": 0.75,
                 "limit_vs_quote": 0.07,
                 "fill_edge_vs_quote": -0.05,
@@ -373,6 +392,7 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             {
                 "timestamp": now.isoformat(),
                 "layer_id": 1,
+                "sleeve_id": "smoke",
                 "symbol": "SPY",
                 "side": "CLOSE",
                 "mode": "paper",
@@ -386,6 +406,12 @@ class PaperCorridorRunnerTests(unittest.TestCase):
                 "upper_strike": 640.0,
                 "limit_price": 0.70,
                 "fill_price": 0.72,
+                "fill_audit": json.dumps(
+                    {
+                        "steps": [{"step": 1, "status": "Submitted"}, {"step": 2, "status": "Filled"}],
+                        "final_limit_offset_from_initial_mid": -0.05,
+                    }
+                ),
                 "quote_reference": 0.75,
                 "limit_vs_quote": 0.05,
                 "fill_edge_vs_quote": -0.03,
@@ -407,6 +433,11 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         self.assertAlmostEqual(report["avg_close_fill_edge_vs_quote"], -0.03, places=6)
         self.assertAlmostEqual(report["avg_close_fill_edge_vs_limit"], 0.02, places=6)
         self.assertAlmostEqual(report["avg_filled_spread_ratio"], 0.1333, places=6)
+        self.assertEqual(report["sleeve_summaries"]["main"]["filled_open_orders_today"], 1)
+        self.assertEqual(report["sleeve_summaries"]["smoke"]["filled_close_orders_today"], 1)
+        self.assertEqual(report["chase_audit_summary"]["audited_orders"], 2)
+        self.assertEqual(report["chase_audit_summary"]["chased_orders"], 1)
+        self.assertEqual(report["sleeve_summaries"]["smoke"]["chase_audit_summary"]["max_steps"], 2)
 
     def test_candidate_execution_issue_rejects_wide_spread_ratio(self) -> None:
         runner = self.make_runner(paper_execution=False)
@@ -606,7 +637,66 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         self.assertEqual(payload["limit_price"], 0.78)
         self.assertEqual(payload["fill_price"], 0.82)
         self.assertEqual(payload["mode"], "paper")
-        self.assertEqual(payload["fill_audit"], {"steps": [{"step": 1, "status": "Filled"}]})
+        self.assertEqual(
+            payload["chase_audit"],
+            {"step_count": 1, "chased": False, "statuses": ["Filled"], "last_status": "Filled"},
+        )
+
+    def test_close_position_sends_discord_alert_once_for_filled_paper_close(self) -> None:
+        runner = self.make_runner(paper_execution=True)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        candidate = self.make_candidate()
+        runner.positions[5] = ManagedPosition(
+            layer_id=5,
+            candidate=candidate,
+            quantity=1,
+            opened_at=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            open_limit=0.78,
+            open_status="Filled",
+            open_fill_price=0.82,
+            source_action=ActionType.ENTER_PRIMARY.value,
+        )
+        runner._refresh_candidate_quote = lambda _candidate: candidate  # type: ignore[method-assign]
+        runner._log_order = lambda _record: None  # type: ignore[method-assign]
+        trade = SimpleNamespace(
+            orderStatus=SimpleNamespace(status="Filled", avgFillPrice=0.64),
+            order=SimpleNamespace(orderId=77),
+            fillAudit={
+                "steps": [{"step": 1, "status": "Submitted"}, {"step": 2, "status": "Filled"}],
+                "final_limit_offset_from_initial_mid": -0.05,
+            },
+            log=[],
+            advancedError="",
+        )
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 18:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.TAKE_PROFIT,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=636.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Primary take-profit reached.",
+        )
+
+        with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
+            runner._close_position(action)
+
+        self.assertNotIn(5, runner.positions)
+        send_mock.assert_called_once()
+        webhook_url, payload = send_mock.call_args.args
+        self.assertEqual(webhook_url, "https://discord.test/webhook")
+        self.assertEqual(payload["event"], "paper_close_filled")
+        self.assertEqual(payload["symbol"], "SPY")
+        self.assertEqual(payload["status"], "Filled")
+        self.assertEqual(payload["order_id"], 77)
+        self.assertEqual(payload["limit_price"], 0.72)
+        self.assertEqual(payload["fill_price"], 0.64)
+        self.assertEqual(payload["reason"], "Primary take-profit reached.")
+        self.assertEqual(payload["chase_audit"]["step_count"], 2)
+        self.assertTrue(payload["chase_audit"]["chased"])
+        self.assertEqual(payload["chase_audit"]["last_status"], "Filled")
 
     def test_open_position_does_not_send_discord_alert_for_dry_run_open(self) -> None:
         runner = self.make_runner(paper_execution=False)
@@ -682,7 +772,84 @@ class PaperCorridorRunnerTests(unittest.TestCase):
                 with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
                     runner._open_position(action, center, regime)
 
-                send_mock.assert_not_called()
+                send_mock.assert_called_once()
+                payload = send_mock.call_args.args[1]
+                self.assertEqual(payload["side"], "OPEN")
+                self.assertEqual(payload["status"], trade.orderStatus.status)
+
+    def test_skipped_open_sends_discord_exception_alert(self) -> None:
+        runner = self.make_runner(paper_execution=True)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        candidate = self.make_candidate()
+        runner._select_candidate = lambda _target_body, **_kwargs: candidate  # type: ignore[method-assign]
+        runner._candidate_execution_issue = lambda _candidate: "Spread too wide for entry."  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.ENTER_PRIMARY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=635.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Opened the primary butterfly corridor layer.",
+            metadata={"body_strike": 635.0, "kind": LayerKind.PRIMARY.value},
+        )
+        center = SimpleNamespace(center_price=635.0)
+        regime = SimpleNamespace(regime=Regime.RANGE)
+
+        with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
+            runner._open_position(action, center, regime)
+
+        send_mock.assert_called_once()
+        payload = send_mock.call_args.args[1]
+        self.assertEqual(payload["side"], "OPEN")
+        self.assertEqual(payload["status"], "skipped")
+        self.assertEqual(payload["reason"], "Spread too wide for entry.")
+
+    def test_close_failure_sends_discord_exception_alert(self) -> None:
+        runner = self.make_runner(paper_execution=True)
+        runner.discord_webhook_url = "https://discord.test/webhook"
+        candidate = self.make_candidate()
+        runner.positions[5] = ManagedPosition(
+            layer_id=5,
+            candidate=candidate,
+            quantity=1,
+            opened_at=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            open_limit=0.78,
+            open_status="Filled",
+            open_fill_price=0.82,
+            source_action=ActionType.ENTER_PRIMARY.value,
+        )
+        runner._refresh_candidate_quote = lambda _candidate: candidate  # type: ignore[method-assign]
+        runner._log_order = lambda _record: None  # type: ignore[method-assign]
+        trade = SimpleNamespace(
+            orderStatus=SimpleNamespace(status="Submitted"),
+            order=SimpleNamespace(orderId=81),
+            fillAudit={"steps": [{"step": 1, "status": "Submitted"}], "abort_reason": "chase_window_exhausted"},
+            log=[SimpleNamespace(message="still working")],
+            advancedError="",
+        )
+        runner._place_combo_order = lambda *_args, **_kwargs: trade  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 18:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.TAKE_PROFIT,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=636.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Primary take-profit reached.",
+        )
+
+        with patch("corridor.execution.paper.send_discord_json_alert", return_value=True) as send_mock:
+            runner._close_position(action)
+
+        send_mock.assert_called_once()
+        payload = send_mock.call_args.args[1]
+        self.assertEqual(payload["side"], "CLOSE")
+        self.assertEqual(payload["status"], "Submitted")
+        self.assertEqual(payload["reason"], "chase_window_exhausted")
+        self.assertEqual(payload["chase_audit"]["abort_reason"], "chase_window_exhausted")
 
     def test_discord_helper_failure_does_not_break_open_position(self) -> None:
         runner = self.make_runner(paper_execution=True)

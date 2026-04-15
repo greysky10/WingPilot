@@ -293,6 +293,12 @@ def _format_optional_price(value: Optional[float]) -> str:
     return f"{float(value):.2f}"
 
 
+def _format_optional_number(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.4f}"
+
+
 def _format_signed_dollar(value: float) -> str:
     return f"${value:+.2f}"
 
@@ -477,6 +483,8 @@ def build_paper_test_summary(state_payload: dict[str, Any], daily_report_payload
         "avg_filled_spread_ratio": spread_ratio,
         "adaptive_fallback_rate": fallback_rate,
         "candidate_diagnostics": candidate_diagnostics,
+        "sleeve_summaries": daily_report_payload.get("sleeve_summaries") or {},
+        "chase_audit_summary": daily_report_payload.get("chase_audit_summary") or {},
         "checks": checks,
         "pass_count": sum(1 for payload in checks.values() if payload["status"] == "PASS"),
         "warn_count": sum(1 for payload in checks.values() if payload["status"] == "WARN"),
@@ -503,6 +511,49 @@ def format_paper_test_summary(summary_payload: dict[str, Any]) -> str:
         if not isinstance(payload, dict):
             continue
         lines.append(f"{key.capitalize()}: {payload.get('status', 'WARN')} | {payload.get('message', '')}")
+    sleeve_summaries = summary_payload.get("sleeve_summaries") or {}
+    if isinstance(sleeve_summaries, dict) and sleeve_summaries:
+        lines.append("Sleeves:")
+        for sleeve_id, sleeve_payload in sorted(sleeve_summaries.items()):
+            if not isinstance(sleeve_payload, dict):
+                continue
+            lines.append(
+                "  "
+                + (
+                    f"{sleeve_id}: open_pos={int(sleeve_payload.get('open_positions_count') or 0)} "
+                    f"filled={int(sleeve_payload.get('filled_orders_today') or 0)} "
+                    f"open={int(sleeve_payload.get('filled_open_orders_today') or 0)} "
+                    f"close={int(sleeve_payload.get('filled_close_orders_today') or 0)} "
+                    f"blocked/skipped={int(sleeve_payload.get('blocked_or_skipped_orders_today') or 0)} "
+                    f"spread={_format_optional_number(sleeve_payload.get('avg_filled_spread_ratio'))}"
+                )
+            )
+            chase_payload = sleeve_payload.get("chase_audit_summary") or {}
+            if isinstance(chase_payload, dict) and int(chase_payload.get("audited_orders") or 0) > 0:
+                lines.append(
+                    "    "
+                    + (
+                        f"chase: audited={int(chase_payload.get('audited_orders') or 0)} "
+                        f"avg_steps={_format_optional_number(chase_payload.get('avg_steps'))} "
+                        f"max_steps={int(chase_payload.get('max_steps') or 0)} "
+                        f"chased={int(chase_payload.get('chased_orders') or 0)} "
+                        f"filled_after_chase={int(chase_payload.get('filled_after_chase') or 0)} "
+                        f"aborts={json.dumps(chase_payload.get('abort_reasons') or {}, ensure_ascii=False, sort_keys=True)}"
+                    )
+                )
+    chase_audit_summary = summary_payload.get("chase_audit_summary") or {}
+    if isinstance(chase_audit_summary, dict) and int(chase_audit_summary.get("audited_orders") or 0) > 0:
+        lines.append(
+            "Chase Audit: "
+            + (
+                f"audited={int(chase_audit_summary.get('audited_orders') or 0)} "
+                f"avg_steps={_format_optional_number(chase_audit_summary.get('avg_steps'))} "
+                f"max_steps={int(chase_audit_summary.get('max_steps') or 0)} "
+                f"chased={int(chase_audit_summary.get('chased_orders') or 0)} "
+                f"filled_after_chase={int(chase_audit_summary.get('filled_after_chase') or 0)} "
+                f"aborts={json.dumps(chase_audit_summary.get('abort_reasons') or {}, ensure_ascii=False, sort_keys=True)}"
+            )
+        )
     lines.append(f"Action: {summary_payload.get('suggested_action', '')}")
     return "\n".join(lines) + "\n"
 
@@ -1558,18 +1609,18 @@ class PaperCorridorRunner:
         order_quantity = max(1, int(action.metadata.get("quantity") or self.runner_cfg.quantity))
         if self.execution_halted_reason:
             self._rollback_unfilled_open(action.layer_id)
-            self._log_order(
-                {
-                    "timestamp": action.timestamp.isoformat(),
-                    "layer_id": action.layer_id,
-                    "sleeve_id": sleeve_id,
-                    "symbol": self.cfg.symbol,
-                    "side": "OPEN",
-                    "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                    "status": "blocked",
-                    "reason": self.execution_halted_reason,
-                }
-            )
+            record = {
+                "timestamp": action.timestamp.isoformat(),
+                "layer_id": action.layer_id,
+                "sleeve_id": sleeve_id,
+                "symbol": self.cfg.symbol,
+                "side": "OPEN",
+                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+                "status": "blocked",
+                "reason": self.execution_halted_reason,
+            }
+            self._log_order(record)
+            self._maybe_send_order_exception_discord_alert(record)
             return
         if center is None or regime is None:
             return
@@ -1581,45 +1632,45 @@ class PaperCorridorRunner:
         candidate = self._select_candidate(target_body, target_dte=target_dte, reference_ts=action.timestamp)
         if candidate is None:
             self._rollback_unfilled_open(action.layer_id)
-            self._log_order(
-                {
-                    "timestamp": action.timestamp.isoformat(),
-                    "layer_id": action.layer_id,
-                    "sleeve_id": sleeve_id,
-                    "symbol": self.cfg.symbol,
-                    "side": "OPEN",
-                    "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                    "status": "skipped",
-                    "reason": "No candidate butterfly matched the corridor center.",
-                    "target_dte": target_dte,
-                }
-            )
+            record = {
+                "timestamp": action.timestamp.isoformat(),
+                "layer_id": action.layer_id,
+                "sleeve_id": sleeve_id,
+                "symbol": self.cfg.symbol,
+                "side": "OPEN",
+                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+                "status": "skipped",
+                "reason": "No candidate butterfly matched the corridor center.",
+                "target_dte": target_dte,
+            }
+            self._log_order(record)
+            self._maybe_send_order_exception_discord_alert(record)
             return
         candidate_issue = self._candidate_execution_issue(candidate)
         if candidate_issue is not None:
             self._rollback_unfilled_open(action.layer_id)
-            self._log_order(
-                {
-                    "timestamp": action.timestamp.isoformat(),
-                    "layer_id": action.layer_id,
-                    "sleeve_id": sleeve_id,
-                    "symbol": self.cfg.symbol,
-                    "side": "OPEN",
-                    "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                    "status": "skipped",
-                    "reason": candidate_issue,
-                    "target_dte": target_dte,
-                    "calendar_dte": candidate.calendar_dte,
-                    "expiry": candidate.expiry,
-                    "right": candidate.right,
-                    "lower_strike": candidate.lower_strike,
-                    "body_strike": candidate.body_strike,
-                    "upper_strike": candidate.upper_strike,
-                    **self._order_pricing_fields("OPEN", candidate, None, None),
-                    "net_debit": round(candidate.net_debit, 4),
-                    "total_spread": round(candidate.total_spread, 4),
-                }
-            )
+            record = {
+                "timestamp": action.timestamp.isoformat(),
+                "layer_id": action.layer_id,
+                "sleeve_id": sleeve_id,
+                "symbol": self.cfg.symbol,
+                "side": "OPEN",
+                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+                "status": "skipped",
+                "reason": candidate_issue,
+                "target_dte": target_dte,
+                "calendar_dte": candidate.calendar_dte,
+                "expiry": candidate.expiry,
+                "right": candidate.right,
+                "lower_strike": candidate.lower_strike,
+                "body_strike": candidate.body_strike,
+                "upper_strike": candidate.upper_strike,
+                **self._order_pricing_fields("OPEN", candidate, None, None),
+                "net_debit": round(candidate.net_debit, 4),
+                "total_spread": round(candidate.total_spread, 4),
+            }
+            self._log_order(record)
+            self._maybe_send_order_exception_discord_alert(record)
             return
 
         limit_price = self._combo_limit_price(candidate, side="BUY")
@@ -1637,34 +1688,34 @@ class PaperCorridorRunner:
                 if fill_audit and fill_audit.get("abort_reason"):
                     failure_reason = str(fill_audit["abort_reason"])
                 self._rollback_unfilled_open(action.layer_id)
-                self._log_order(
-                    {
-                        "timestamp": action.timestamp.isoformat(),
-                        "layer_id": action.layer_id,
-                        "sleeve_id": sleeve_id,
-                        "symbol": self.cfg.symbol,
-                        "side": "OPEN",
-                        "mode": "paper",
-                        "status": status,
-                        "order_id": order_id,
-                        "quantity": order_quantity,
-                        "target_dte": target_dte,
-                        "calendar_dte": candidate.calendar_dte,
-                        "expiry": candidate.expiry,
-                        "trading_class": candidate.trading_class,
-                        "right": candidate.right,
-                        "lower_strike": candidate.lower_strike,
-                        "body_strike": candidate.body_strike,
-                        "upper_strike": candidate.upper_strike,
-                        "limit_price": round(limit_price, 2),
-                        "fill_price": self._trade_fill_price(trade),
-                        "fill_audit": json.dumps(fill_audit, sort_keys=True) if fill_audit else None,
-                        **self._order_pricing_fields("OPEN", candidate, limit_price, self._trade_fill_price(trade)),
-                        "net_debit": round(candidate.net_debit, 4),
-                        "total_spread": round(candidate.total_spread, 4),
-                        "reason": failure_reason,
-                    }
-                )
+                record = {
+                    "timestamp": action.timestamp.isoformat(),
+                    "layer_id": action.layer_id,
+                    "sleeve_id": sleeve_id,
+                    "symbol": self.cfg.symbol,
+                    "side": "OPEN",
+                    "mode": "paper",
+                    "status": status,
+                    "order_id": order_id,
+                    "quantity": order_quantity,
+                    "target_dte": target_dte,
+                    "calendar_dte": candidate.calendar_dte,
+                    "expiry": candidate.expiry,
+                    "trading_class": candidate.trading_class,
+                    "right": candidate.right,
+                    "lower_strike": candidate.lower_strike,
+                    "body_strike": candidate.body_strike,
+                    "upper_strike": candidate.upper_strike,
+                    "limit_price": round(limit_price, 2),
+                    "fill_price": self._trade_fill_price(trade),
+                    "fill_audit": json.dumps(fill_audit, sort_keys=True) if fill_audit else None,
+                    **self._order_pricing_fields("OPEN", candidate, limit_price, self._trade_fill_price(trade)),
+                    "net_debit": round(candidate.net_debit, 4),
+                    "total_spread": round(candidate.total_spread, 4),
+                    "reason": failure_reason,
+                }
+                self._log_order(record)
+                self._maybe_send_order_exception_discord_alert(record)
                 if not self._is_benign_trade_abort(trade, fill_audit, failure_reason):
                     self._halt_execution(
                         f"Paper order rejected while opening layer {action.layer_id}: {failure_reason}"
@@ -1675,34 +1726,34 @@ class PaperCorridorRunner:
                 if fill_audit and fill_audit.get("abort_reason"):
                     failure_reason = str(fill_audit["abort_reason"])
                 self._rollback_unfilled_open(action.layer_id)
-                self._log_order(
-                    {
-                        "timestamp": action.timestamp.isoformat(),
-                        "layer_id": action.layer_id,
-                        "sleeve_id": sleeve_id,
-                        "symbol": self.cfg.symbol,
-                        "side": "OPEN",
-                        "mode": "paper",
-                        "status": status,
-                        "order_id": order_id,
-                        "quantity": order_quantity,
-                        "target_dte": target_dte,
-                        "calendar_dte": candidate.calendar_dte,
-                        "expiry": candidate.expiry,
-                        "trading_class": candidate.trading_class,
-                        "right": candidate.right,
-                        "lower_strike": candidate.lower_strike,
-                        "body_strike": candidate.body_strike,
-                        "upper_strike": candidate.upper_strike,
-                        "limit_price": round(limit_price, 2),
-                        "fill_price": self._trade_fill_price(trade),
-                        "fill_audit": json.dumps(fill_audit, sort_keys=True) if fill_audit else None,
-                        **self._order_pricing_fields("OPEN", candidate, limit_price, self._trade_fill_price(trade)),
-                        "net_debit": round(candidate.net_debit, 4),
-                        "total_spread": round(candidate.total_spread, 4),
-                        "reason": failure_reason or "Combo order did not fill within the chase window.",
-                    }
-                )
+                record = {
+                    "timestamp": action.timestamp.isoformat(),
+                    "layer_id": action.layer_id,
+                    "sleeve_id": sleeve_id,
+                    "symbol": self.cfg.symbol,
+                    "side": "OPEN",
+                    "mode": "paper",
+                    "status": status,
+                    "order_id": order_id,
+                    "quantity": order_quantity,
+                    "target_dte": target_dte,
+                    "calendar_dte": candidate.calendar_dte,
+                    "expiry": candidate.expiry,
+                    "trading_class": candidate.trading_class,
+                    "right": candidate.right,
+                    "lower_strike": candidate.lower_strike,
+                    "body_strike": candidate.body_strike,
+                    "upper_strike": candidate.upper_strike,
+                    "limit_price": round(limit_price, 2),
+                    "fill_price": self._trade_fill_price(trade),
+                    "fill_audit": json.dumps(fill_audit, sort_keys=True) if fill_audit else None,
+                    **self._order_pricing_fields("OPEN", candidate, limit_price, self._trade_fill_price(trade)),
+                    "net_debit": round(candidate.net_debit, 4),
+                    "total_spread": round(candidate.total_spread, 4),
+                    "reason": failure_reason or "Combo order did not fill within the chase window.",
+                }
+                self._log_order(record)
+                self._maybe_send_order_exception_discord_alert(record)
                 return
             open_fill_price = self._trade_fill_price(trade)
         else:
@@ -1762,57 +1813,57 @@ class PaperCorridorRunner:
     def _close_position(self, action: ActionRecord) -> None:
         position = self.positions.get(action.layer_id or -1)
         if position is None:
-            self._log_order(
-                {
-                    "timestamp": action.timestamp.isoformat(),
-                    "layer_id": action.layer_id,
-                    "sleeve_id": self._action_sleeve_id(action),
-                    "symbol": self.cfg.symbol,
-                    "side": "CLOSE",
-                    "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                    "status": "skipped",
-                    "reason": "No tracked position for the closing action.",
-                }
-            )
+            record = {
+                "timestamp": action.timestamp.isoformat(),
+                "layer_id": action.layer_id,
+                "sleeve_id": self._action_sleeve_id(action),
+                "symbol": self.cfg.symbol,
+                "side": "CLOSE",
+                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+                "status": "skipped",
+                "reason": "No tracked position for the closing action.",
+            }
+            self._log_order(record)
+            self._maybe_send_order_exception_discord_alert(record)
             return
         if self.execution_halted_reason:
-            self._log_order(
-                {
-                    "timestamp": action.timestamp.isoformat(),
-                    "layer_id": action.layer_id,
-                    "sleeve_id": position.sleeve_id,
-                    "symbol": self.cfg.symbol,
-                    "side": "CLOSE",
-                    "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                    "status": "blocked",
-                    "reason": self.execution_halted_reason,
-                }
-            )
+            record = {
+                "timestamp": action.timestamp.isoformat(),
+                "layer_id": action.layer_id,
+                "sleeve_id": position.sleeve_id,
+                "symbol": self.cfg.symbol,
+                "side": "CLOSE",
+                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+                "status": "blocked",
+                "reason": self.execution_halted_reason,
+            }
+            self._log_order(record)
+            self._maybe_send_order_exception_discord_alert(record)
             return
 
         live_candidate = self._refresh_candidate_quote(position.candidate) or position.candidate
         candidate_issue = self._candidate_execution_issue(live_candidate)
         if candidate_issue is not None:
-            self._log_order(
-                {
-                    "timestamp": action.timestamp.isoformat(),
-                    "layer_id": action.layer_id,
-                    "sleeve_id": position.sleeve_id,
-                    "symbol": self.cfg.symbol,
-                    "side": "CLOSE",
-                    "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                    "status": "blocked",
-                    "reason": candidate_issue,
-                    "expiry": live_candidate.expiry,
-                    "right": live_candidate.right,
-                    "lower_strike": live_candidate.lower_strike,
-                    "body_strike": live_candidate.body_strike,
-                    "upper_strike": live_candidate.upper_strike,
-                    **self._order_pricing_fields("CLOSE", live_candidate, None, None),
-                    "net_debit": round(live_candidate.net_debit, 4),
-                    "total_spread": round(live_candidate.total_spread, 4),
-                }
-            )
+            record = {
+                "timestamp": action.timestamp.isoformat(),
+                "layer_id": action.layer_id,
+                "sleeve_id": position.sleeve_id,
+                "symbol": self.cfg.symbol,
+                "side": "CLOSE",
+                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+                "status": "blocked",
+                "reason": candidate_issue,
+                "expiry": live_candidate.expiry,
+                "right": live_candidate.right,
+                "lower_strike": live_candidate.lower_strike,
+                "body_strike": live_candidate.body_strike,
+                "upper_strike": live_candidate.upper_strike,
+                **self._order_pricing_fields("CLOSE", live_candidate, None, None),
+                "net_debit": round(live_candidate.net_debit, 4),
+                "total_spread": round(live_candidate.total_spread, 4),
+            }
+            self._log_order(record)
+            self._maybe_send_order_exception_discord_alert(record)
             self._halt_execution(f"Live close quote is not execution-safe for layer {action.layer_id}: {candidate_issue}")
             return
 
@@ -1844,38 +1895,213 @@ class PaperCorridorRunner:
         position.close_order_id = order_id
         position.close_failure_reason = failure_reason
         position.candidate = live_candidate
-        self._log_order(
-            {
-                "timestamp": action.timestamp.isoformat(),
-                "layer_id": action.layer_id,
-                "sleeve_id": position.sleeve_id,
-                "symbol": self.cfg.symbol,
-                "side": "CLOSE",
-                "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
-                "status": status,
-                "order_id": order_id,
-                "quantity": position.quantity,
-                "expiry": live_candidate.expiry,
-                "right": live_candidate.right,
-                "lower_strike": live_candidate.lower_strike,
-                "body_strike": live_candidate.body_strike,
-                "upper_strike": live_candidate.upper_strike,
-                "limit_price": round(limit_price, 2),
-                "fill_price": close_fill_price,
-                "fill_audit": json.dumps(fill_audit, sort_keys=True) if fill_audit else None,
-                **self._order_pricing_fields("CLOSE", live_candidate, limit_price, close_fill_price),
-                "net_debit": round(live_candidate.net_debit, 4),
-                "total_spread": round(live_candidate.total_spread, 4),
-                "reason": failure_reason or action.detail,
-            }
-        )
+        record = {
+            "timestamp": action.timestamp.isoformat(),
+            "layer_id": action.layer_id,
+            "sleeve_id": position.sleeve_id,
+            "symbol": self.cfg.symbol,
+            "side": "CLOSE",
+            "mode": "paper" if self.runner_cfg.paper_execution else "dry-run",
+            "status": status,
+            "order_id": order_id,
+            "quantity": position.quantity,
+            "expiry": live_candidate.expiry,
+            "right": live_candidate.right,
+            "lower_strike": live_candidate.lower_strike,
+            "body_strike": live_candidate.body_strike,
+            "upper_strike": live_candidate.upper_strike,
+            "limit_price": round(limit_price, 2),
+            "fill_price": close_fill_price,
+            "fill_audit": json.dumps(fill_audit, sort_keys=True) if fill_audit else None,
+            **self._order_pricing_fields("CLOSE", live_candidate, limit_price, close_fill_price),
+            "net_debit": round(live_candidate.net_debit, 4),
+            "total_spread": round(live_candidate.total_spread, 4),
+            "reason": failure_reason or action.detail,
+        }
+        self._log_order(record)
         if failure_reason:
+            self._maybe_send_order_exception_discord_alert(record)
             if not self._is_benign_trade_abort(trade, fill_audit, failure_reason):
                 self._halt_execution(f"Paper close failed for layer {action.layer_id}: {failure_reason}")
             return
         if status.lower() == "filled":
+            self._maybe_send_close_discord_alert(
+                position,
+                action=action,
+                status=status,
+                order_id=order_id,
+                limit_price=limit_price,
+                close_fill_price=close_fill_price,
+                fill_audit=fill_audit,
+            )
             position.closed_at = action.timestamp
             del self.positions[position.layer_id]
+
+    @staticmethod
+    def _coerce_fill_audit_payload(fill_audit: Any) -> Optional[dict[str, Any]]:
+        if fill_audit in (None, ""):
+            return None
+        if isinstance(fill_audit, dict):
+            return fill_audit
+        if isinstance(fill_audit, str):
+            try:
+                parsed = json.loads(fill_audit)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @classmethod
+    def _fill_audit_summary(cls, fill_audit: Any) -> Optional[dict[str, Any]]:
+        payload = cls._coerce_fill_audit_payload(fill_audit)
+        if not payload:
+            return None
+        steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+        cleaned_steps = [step for step in steps if isinstance(step, dict)]
+        statuses = [str(step.get("status")) for step in cleaned_steps if step.get("status") is not None]
+        summary: dict[str, Any] = {
+            "step_count": len(cleaned_steps),
+            "chased": len(cleaned_steps) > 1,
+        }
+        if statuses:
+            summary["statuses"] = statuses
+            summary["last_status"] = statuses[-1]
+        abort_reason = str(payload.get("abort_reason") or "").strip()
+        if abort_reason:
+            summary["abort_reason"] = abort_reason
+        for key in ["final_limit_offset_from_initial_mid", "final_fill_offset_from_initial_mid"]:
+            value = payload.get(key)
+            if value not in (None, ""):
+                summary[key] = round(float(value), 4)
+        return summary
+
+    @classmethod
+    def _aggregate_chase_audit_summary(cls, rows: list[dict[str, str]]) -> dict[str, Any]:
+        audits: list[tuple[dict[str, Any], dict[str, str]]] = []
+        for row in rows:
+            payload = cls._coerce_fill_audit_payload(row.get("fill_audit"))
+            if payload:
+                audits.append((payload, row))
+        if not audits:
+            return {
+                "audited_orders": 0,
+                "avg_steps": None,
+                "max_steps": 0,
+                "chased_orders": 0,
+                "filled_after_chase": 0,
+                "abort_reasons": {},
+            }
+        step_counts = [
+            len(payload.get("steps")) if isinstance(payload.get("steps"), list) else 0
+            for payload, _row in audits
+        ]
+        chased_orders = sum(1 for count in step_counts if count > 1)
+        filled_after_chase = sum(
+            1
+            for (payload, row), count in zip(audits, step_counts)
+            if count > 1 and row.get("status") == "Filled"
+        )
+        abort_reason_counts = Counter(
+            str(payload.get("abort_reason") or "").strip()
+            for payload, _row in audits
+            if str(payload.get("abort_reason") or "").strip()
+        )
+        return {
+            "audited_orders": len(audits),
+            "avg_steps": round(sum(step_counts) / len(step_counts), 4),
+            "max_steps": max(step_counts) if step_counts else 0,
+            "chased_orders": chased_orders,
+            "filled_after_chase": filled_after_chase,
+            "abort_reasons": dict(sorted(abort_reason_counts.items())),
+        }
+
+    def _build_order_event_payload(self, record: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "event": "paper_order_event",
+            "symbol": record.get("symbol") or self.cfg.symbol,
+            "sleeve_id": record.get("sleeve_id") or "main",
+            "side": record.get("side"),
+            "status": record.get("status"),
+            "timestamp": record.get("timestamp"),
+            "layer_id": record.get("layer_id"),
+            "order_id": record.get("order_id"),
+            "mode": record.get("mode"),
+            "quantity": record.get("quantity"),
+            "expiry": record.get("expiry"),
+            "right": record.get("right"),
+            "lower_strike": record.get("lower_strike"),
+            "body_strike": record.get("body_strike"),
+            "upper_strike": record.get("upper_strike"),
+            "limit_price": record.get("limit_price"),
+            "fill_price": record.get("fill_price"),
+            "quote_reference": record.get("quote_reference"),
+            "spread_ratio": record.get("spread_ratio"),
+            "reason": record.get("reason"),
+        }
+        chase_summary = self._fill_audit_summary(record.get("fill_audit"))
+        if chase_summary is not None:
+            payload["chase_audit"] = chase_summary
+        return payload
+
+    def _maybe_send_order_exception_discord_alert(self, record: dict[str, Any]) -> None:
+        if not self.runner_cfg.paper_execution:
+            return
+        if not self.discord_webhook_url:
+            return
+        if str(record.get("side") or "").upper() not in {"OPEN", "CLOSE"}:
+            return
+        status = str(record.get("status") or "")
+        if status in {"Filled", "dry_run"}:
+            return
+        if not record.get("reason"):
+            return
+        send_discord_json_alert(self.discord_webhook_url, self._build_order_event_payload(record))
+
+    def _maybe_send_close_discord_alert(
+        self,
+        position: ManagedPosition,
+        *,
+        action: ActionRecord,
+        status: str,
+        order_id: Optional[int],
+        limit_price: float,
+        close_fill_price: Optional[float],
+        fill_audit: Optional[dict[str, Any]],
+    ) -> None:
+        if not self.runner_cfg.paper_execution:
+            return
+        if str(status).lower() != "filled":
+            return
+        if close_fill_price is None:
+            return
+        if not self.discord_webhook_url:
+            return
+
+        candidate = position.candidate
+        payload: dict[str, Any] = {
+            "event": "paper_close_filled",
+            "sleeve_id": position.sleeve_id,
+            "symbol": candidate.symbol,
+            "expiry": candidate.expiry,
+            "lower_strike": candidate.lower_strike,
+            "body_strike": candidate.body_strike,
+            "upper_strike": candidate.upper_strike,
+            "wing_mode": candidate.wing_mode,
+            "net_debit": round(float(candidate.net_debit), 4),
+            "timestamp": action.timestamp.isoformat(),
+            "status": status,
+            "layer_id": position.layer_id,
+            "quantity": position.quantity,
+            "order_id": order_id,
+            "limit_price": round(float(limit_price), 2),
+            "fill_price": round(float(close_fill_price), 4),
+            "mode": "paper",
+            "reason": action.detail,
+        }
+        chase_summary = self._fill_audit_summary(fill_audit)
+        if chase_summary is not None:
+            payload["chase_audit"] = chase_summary
+        send_discord_json_alert(self.discord_webhook_url, payload)
 
     def _maybe_send_open_discord_alert(
         self,
@@ -1920,8 +2146,9 @@ class PaperCorridorRunner:
             "fill_price": round(float(open_fill_price), 4),
             "mode": "paper",
         }
-        if fill_audit is not None:
-            payload["fill_audit"] = fill_audit
+        chase_summary = self._fill_audit_summary(fill_audit)
+        if chase_summary is not None:
+            payload["chase_audit"] = chase_summary
 
         send_discord_json_alert(self.discord_webhook_url, payload)
 
@@ -2890,6 +3117,8 @@ class PaperCorridorRunner:
             "candidate_count": daily_report.get("candidate_count"),
             "candidate_status": daily_report.get("candidate_status"),
             "paper_smoke_mode": daily_report.get("paper_smoke_mode"),
+            "sleeve_summaries": summary_payload.get("sleeve_summaries"),
+            "chase_audit_summary": summary_payload.get("chase_audit_summary"),
         }
         signature = json.dumps(signature_payload, sort_keys=True, ensure_ascii=False)
         if signature == self.last_discord_summary_signature and self.last_discord_summary_sent_at is not None:
@@ -2985,6 +3214,9 @@ class PaperCorridorRunner:
         )
         filled_open_orders = [row for row in orders_today if row.get("side") == "OPEN" and row.get("status") == "Filled"]
         filled_close_orders = [row for row in orders_today if row.get("side") == "CLOSE" and row.get("status") == "Filled"]
+        open_positions_by_sleeve = state_payload.get("open_positions_by_sleeve") or {}
+        sleeve_summaries = self._build_sleeve_summaries(orders_today, open_positions_by_sleeve)
+        chase_audit_summary = self._aggregate_chase_audit_summary(orders_today)
 
         return {
             "report_timestamp": now_utc.isoformat(),
@@ -3019,7 +3251,9 @@ class PaperCorridorRunner:
             "adaptive_fallback_rate": adaptive_fallback_rate,
             "fallback_type_distribution": fallback_type_distribution,
             "open_positions_count": len(state_payload.get("open_positions", [])),
-            "open_positions_by_sleeve": state_payload.get("open_positions_by_sleeve"),
+            "open_positions_by_sleeve": open_positions_by_sleeve,
+            "sleeve_summaries": sleeve_summaries,
+            "chase_audit_summary": chase_audit_summary,
             "open_position_bodies": ",".join(
                 str(item.get("body_strike")) for item in state_payload.get("open_positions", []) if item.get("body_strike") is not None
             ),
@@ -3102,6 +3336,42 @@ class PaperCorridorRunner:
         if not values:
             return None
         return round(max(values), 4)
+
+    def _build_sleeve_summaries(
+        self,
+        orders_today: list[dict[str, str]],
+        open_positions_by_sleeve: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        grouped_orders: dict[str, list[dict[str, str]]] = {}
+        for row in orders_today:
+            sleeve_id = str(row.get("sleeve_id") or "main")
+            grouped_orders.setdefault(sleeve_id, []).append(row)
+        all_sleeves = set(grouped_orders)
+        all_sleeves.update(str(key) for key in dict(open_positions_by_sleeve or {}).keys())
+        summaries: dict[str, dict[str, Any]] = {}
+        for sleeve_id in sorted(all_sleeves):
+            sleeve_rows = grouped_orders.get(sleeve_id, [])
+            filled_rows = [row for row in sleeve_rows if row.get("status") == "Filled"]
+            filled_open_orders = [row for row in filled_rows if row.get("side") == "OPEN"]
+            filled_close_orders = [row for row in filled_rows if row.get("side") == "CLOSE"]
+            summaries[sleeve_id] = {
+                "orders_today_total": len(sleeve_rows),
+                "filled_orders_today": len(filled_rows),
+                "filled_open_orders_today": len(filled_open_orders),
+                "filled_close_orders_today": len(filled_close_orders),
+                "blocked_or_skipped_orders_today": sum(
+                    1 for row in sleeve_rows if row.get("status") in {"blocked", "skipped"}
+                ),
+                "execution_failure_orders_today": sum(
+                    1 for row in sleeve_rows if row.get("status") in {"blocked", "Cancelled", "ApiCancelled", "Inactive"}
+                ),
+                "open_positions_count": int(dict(open_positions_by_sleeve or {}).get(sleeve_id, 0) or 0),
+                "avg_open_fill_edge_vs_quote": self._average_csv_float(filled_open_orders, "fill_edge_vs_quote"),
+                "avg_close_fill_edge_vs_quote": self._average_csv_float(filled_close_orders, "fill_edge_vs_quote"),
+                "avg_filled_spread_ratio": self._average_csv_float(filled_rows, "spread_ratio"),
+                "chase_audit_summary": self._aggregate_chase_audit_summary(sleeve_rows),
+            }
+        return summaries
 
     def _build_state_snapshot(self) -> dict[str, Any]:
         regime = self.detector.evaluate(self.history)
