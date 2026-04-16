@@ -305,11 +305,12 @@ class PaperCorridorRunnerTests(unittest.TestCase):
             }
         )
 
-        runner._write_state_snapshot()
+        with patch.object(runner, "_should_send_scheduled_discord_report", return_value=(True, "eod_report|2026-04-16")):
+            runner._write_state_snapshot()
 
         discord_mock.assert_called_once()
         sent_message = discord_mock.call_args.args[1]
-        self.assertIn("Discord Paper Summary", sent_message)
+        self.assertIn("Discord EOD Summary", sent_message)
         self.assertIn("Paper Test Summary", sent_message)
         self.assertIn("Sleeves:", sent_message)
         self.assertIn("Chase Audit:", sent_message)
@@ -337,8 +338,9 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         }
         summary_text = "Paper Test Summary | PASS | 2026-04-15 | SPY\n"
 
-        runner._maybe_send_discord_test_summary(daily_report, summary_payload, summary_text)
-        runner._maybe_send_discord_test_summary(daily_report, summary_payload, summary_text)
+        with patch.object(runner, "_should_send_scheduled_discord_report", return_value=(True, "eod_report|2026-04-15")):
+            runner._maybe_send_discord_test_summary(daily_report, summary_payload, summary_text)
+            runner._maybe_send_discord_test_summary(daily_report, summary_payload, summary_text)
 
         discord_mock.assert_called_once()
 
@@ -805,6 +807,45 @@ class PaperCorridorRunnerTests(unittest.TestCase):
         self.assertEqual(payload["side"], "OPEN")
         self.assertEqual(payload["status"], "skipped")
         self.assertEqual(payload["reason"], "Spread too wide for entry.")
+
+    def test_smoke_entry_falls_back_to_wider_body_search(self) -> None:
+        runner = self.make_runner(paper_execution=False, paper_smoke_mode=True, smoke_candidate_body_search_steps=6)
+        candidate = self.make_candidate()
+        calls: list[object] = []
+
+        def fake_select(target_body, **kwargs):
+            calls.append(kwargs.get("body_search_steps"))
+            return None if kwargs.get("body_search_steps") is None else candidate
+
+        runner._select_candidate = fake_select  # type: ignore[method-assign]
+        runner._log_order = lambda _record: None  # type: ignore[method-assign]
+        action = ActionRecord(
+            timestamp=pd.Timestamp("2026-03-30 17:15:00", tz="UTC"),
+            symbol="SPY",
+            action=ActionType.SMOKE_ENTRY,
+            state=CorridorState.ACTIVE_CENTERED,
+            price=635.0,
+            center_price=635.0,
+            layer_id=5,
+            detail="Paper smoke mode entry.",
+            metadata={
+                "body_strike": 635.0,
+                "kind": LayerKind.PRIMARY.value,
+                "configured_target_dte": 28,
+                "selection_center_price": 635.0,
+                "sleeve_id": "smoke",
+                "quantity": 1,
+            },
+        )
+        center = SimpleNamespace(center_price=635.0)
+        regime = SimpleNamespace(regime=Regime.TREND_UP)
+
+        runner._open_position(action, center, regime)
+
+        self.assertIn(None, calls)
+        self.assertIn(6, calls)
+        self.assertIn(5, runner.positions)
+        self.assertEqual(runner.positions[5].sleeve_id, "smoke")
 
     def test_close_failure_sends_discord_exception_alert(self) -> None:
         runner = self.make_runner(paper_execution=True)

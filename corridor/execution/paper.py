@@ -65,6 +65,7 @@ class PaperRunnerConfig:
     smoke_quantity: int = 1
     smoke_entry_end: str = "11:00"
     smoke_force_close_minutes: int = 45
+    smoke_candidate_body_search_steps: int = 6
     discord_summary: bool = False
     discord_summary_min_interval_minutes: int = 30
     output_dir: Path = Path("corridor_outputs") / "paper_runner"
@@ -1742,6 +1743,33 @@ class PaperCorridorRunner:
             if position.sleeve_id == "smoke" or position.source_action == ActionType.SMOKE_ENTRY.value
         ]
 
+    def _select_smoke_candidate(
+        self,
+        target_body: float,
+        *,
+        target_dte: int,
+        reference_ts: pd.Timestamp,
+    ) -> Optional[ButterflyCandidate]:
+        candidate = self._select_candidate(
+            target_body,
+            target_dte=target_dte,
+            reference_ts=reference_ts,
+        )
+        if candidate is not None:
+            return candidate
+        fallback_steps = max(
+            int(self.cfg.candidate_body_search_steps),
+            int(self.runner_cfg.smoke_candidate_body_search_steps),
+        )
+        if fallback_steps <= int(self.cfg.candidate_body_search_steps):
+            return None
+        return self._select_candidate(
+            target_body,
+            target_dte=target_dte,
+            reference_ts=reference_ts,
+            body_search_steps=fallback_steps,
+        )
+
     def _open_position(self, action: ActionRecord, center, regime) -> None:
         if action.layer_id is None or action.layer_id in self.positions:
             return
@@ -1769,9 +1797,17 @@ class PaperCorridorRunner:
 
         target_body = float(action.metadata.get("body_strike") or action.metadata.get("center_price") or action.center_price or 0.0)
         target_dte = int(action.metadata.get("configured_target_dte") or self.cfg.default_dte)
-        candidate = self._select_candidate(target_body, target_dte=target_dte, reference_ts=action.timestamp)
+        if action.action == ActionType.SMOKE_ENTRY:
+            candidate = self._select_smoke_candidate(
+                target_body,
+                target_dte=target_dte,
+                reference_ts=action.timestamp,
+            )
+        else:
+            candidate = self._select_candidate(target_body, target_dte=target_dte, reference_ts=action.timestamp)
         if candidate is None:
             self._rollback_unfilled_open(action.layer_id)
+            diagnostics = self.latest_candidate_diagnostics or {}
             record = {
                 "timestamp": action.timestamp.isoformat(),
                 "layer_id": action.layer_id,
@@ -1782,6 +1818,12 @@ class PaperCorridorRunner:
                 "status": "skipped",
                 "reason": "No candidate butterfly matched the corridor center.",
                 "target_dte": target_dte,
+                "selection_center_price": action.metadata.get("selection_center_price"),
+                "target_body": round(float(target_body), 4),
+                "body_search_steps": diagnostics.get("body_search_steps"),
+                "available_quotes": diagnostics.get("available_quotes"),
+                "attempted_structures": diagnostics.get("attempted_structures"),
+                "candidate_rejections": json.dumps(diagnostics.get("rejection_counts") or {}, sort_keys=True),
             }
             self._log_order(record)
             self._maybe_send_order_exception_discord_alert(record)
@@ -2176,6 +2218,13 @@ class PaperCorridorRunner:
             "fill_price": record.get("fill_price"),
             "quote_reference": record.get("quote_reference"),
             "spread_ratio": record.get("spread_ratio"),
+            "target_dte": record.get("target_dte"),
+            "selection_center_price": record.get("selection_center_price"),
+            "target_body": record.get("target_body"),
+            "body_search_steps": record.get("body_search_steps"),
+            "available_quotes": record.get("available_quotes"),
+            "attempted_structures": record.get("attempted_structures"),
+            "candidate_rejections": record.get("candidate_rejections"),
             "reason": record.get("reason"),
         }
         chase_summary = self._fill_audit_summary(record.get("fill_audit"))
@@ -2298,8 +2347,14 @@ class PaperCorridorRunner:
         *,
         target_dte: Optional[int] = None,
         reference_ts: Optional[pd.Timestamp] = None,
+        body_search_steps: Optional[int] = None,
     ) -> Optional[ButterflyCandidate]:
-        candidates = self._load_candidates(target_body, target_dte=target_dte, reference_ts=reference_ts)
+        candidates = self._load_candidates(
+            target_body,
+            target_dte=target_dte,
+            reference_ts=reference_ts,
+            body_search_steps=body_search_steps,
+        )
         if not candidates:
             return None
         if self.cfg.wing_mode != "adaptive":
@@ -2360,11 +2415,13 @@ class PaperCorridorRunner:
         *,
         target_dte: Optional[int] = None,
         reference_ts: Optional[pd.Timestamp] = None,
+        body_search_steps: Optional[int] = None,
     ) -> list[ButterflyCandidate]:
         candidates, diagnostics = self._load_candidates_with_diagnostics(
             target_body,
             target_dte=target_dte,
             reference_ts=reference_ts,
+            body_search_steps=body_search_steps,
         )
         self.latest_candidate_diagnostics = diagnostics
         return candidates
@@ -2375,6 +2432,7 @@ class PaperCorridorRunner:
         *,
         target_dte: Optional[int] = None,
         reference_ts: Optional[pd.Timestamp] = None,
+        body_search_steps: Optional[int] = None,
     ) -> tuple[list[ButterflyCandidate], dict[str, Any]]:
         loader = IBOptionChainLoader(
             self.runner_cfg.host,
@@ -2391,7 +2449,11 @@ class PaperCorridorRunner:
             self.cfg.wing_mode,
             self.cfg.dte_min,
             self.cfg.dte_max,
-            body_search_steps=self.cfg.candidate_body_search_steps,
+            body_search_steps=(
+                self.cfg.candidate_body_search_steps
+                if body_search_steps is None
+                else max(0, int(body_search_steps))
+            ),
             center_rounding=self.cfg.center_rounding,
             market_data_type=self.market_data_type,
         )
@@ -2408,6 +2470,11 @@ class PaperCorridorRunner:
         diagnostic_payload = {
             "target_body": round(float(target_body), 4),
             "target_dte": int(target_dte) if target_dte is not None else None,
+            "body_search_steps": (
+                self.cfg.candidate_body_search_steps
+                if body_search_steps is None
+                else max(0, int(body_search_steps))
+            ),
             "available_quotes": int(diagnostics.available_quotes),
             "expiries_considered": int(diagnostics.expiries_considered),
             "call_bodies_considered": int(diagnostics.call_bodies_considered),

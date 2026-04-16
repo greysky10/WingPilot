@@ -129,6 +129,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Minutes to hold a smoke-mode paper position before forcing an exit on the next completed bar.",
     )
     parser.add_argument(
+        "--smoke-candidate-body-search-steps",
+        type=int,
+        default=6,
+        help="Extra rounded body-strike steps to search for smoke-mode entries when the primary target body has no candidate.",
+    )
+    parser.add_argument(
         "--sync-on-start",
         action="store_true",
         help="Restore the persisted paper-runner recovery state and reconcile it against the live IB account instead of resetting flat.",
@@ -231,6 +237,7 @@ def build_configs(args: argparse.Namespace) -> tuple[CorridorConfig, PaperRunner
         smoke_quantity=max(1, int(args.smoke_quantity)),
         smoke_entry_end=str(args.smoke_entry_end),
         smoke_force_close_minutes=max(1, int(args.smoke_force_close_minutes)),
+        smoke_candidate_body_search_steps=max(0, int(args.smoke_candidate_body_search_steps)),
         discord_summary=bool(args.discord_summary),
         discord_summary_min_interval_minutes=max(1, int(args.discord_summary_min_interval_minutes)),
         output_dir=output_dir,
