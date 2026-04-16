@@ -34,6 +34,7 @@ from corridor.options.combo_builder import ComboLegSpec, build_butterfly_combo
 from corridor.strategy.center_estimator import CenterEstimator
 from corridor.strategy.corridor_state_machine import CorridorStateMachine
 from corridor.strategy.regime import RangeRegimeDetector
+from corridor.execution.paper_diagnostics import PaperDiagnosticsCollector, RejectionReason
 
 
 try:
@@ -665,12 +666,20 @@ class PaperCorridorRunner:
         self.latest_candidate_diagnostics: dict[str, Any] | None = None
         self.last_discord_summary_sent_at: Optional[pd.Timestamp] = None
         self.last_discord_summary_signature: Optional[str] = None
+        self.last_discord_daily_report_date: Optional[str] = None  # Track last date we sent a daily report
+        self.last_discord_morning_sent: bool = False  # Track if morning report sent today
         self.wing_stats: dict[str, int] = {
             "symmetric": 0,
             "broken_upper": 0,
             "broken_lower": 0,
             "guard_fails": 0,
         }
+        # Diagnostics collector for structured logging
+        self.diagnostics = PaperDiagnosticsCollector(
+            output_dir=runner_cfg.output_dir,
+            prefix=runner_cfg.log_prefix,
+            enabled=runner_cfg.paper_smoke_mode,  # Enable for smoke mode
+        )
         self._restore_persistent_stats()
 
     def _restore_persistent_stats(self) -> None:
@@ -747,7 +756,29 @@ class PaperCorridorRunner:
         self.underlying_contract = build_underlying_contract(self.cfg.symbol, self.cfg.ib_exchange, self.cfg.ib_currency)
         self.ib.qualifyContracts(self.underlying_contract)
 
+        # Emit runner event for connection
+        if self.diagnostics.enabled:
+            self.diagnostics.emit_runner_event(
+                symbol=self.cfg.symbol,
+                event_type="connected",
+                connection_state="connected",
+                market_data_state="available",
+                cycle_complete=True,
+                message=f"Connected to IB at {self.runner_cfg.host}:{port}",
+            )
+
     def disconnect(self) -> None:
+        # Emit runner event for disconnection
+        if self.diagnostics.enabled:
+            self.diagnostics.emit_runner_event(
+                symbol=self.cfg.symbol,
+                event_type="disconnected",
+                connection_state="disconnected",
+                market_data_state="unavailable",
+                cycle_complete=False,
+                message="Disconnected from IB",
+            )
+
         if self.market_ticker is not None and self.underlying_contract is not None:
             try:
                 self.ib.cancelMktData(self.underlying_contract)
@@ -875,6 +906,21 @@ class PaperCorridorRunner:
         print(f"Seeded {len(self.history)} completed bars and synced live state from history.")
 
     def poll_once(self) -> None:
+        # Emit heartbeat for smoke mode diagnostics
+        if self.runner_cfg.paper_smoke_mode and self.diagnostics.enabled:
+            regime = self.detector.evaluate(self.history) if not self.history.empty else None
+            self.diagnostics.emit_heartbeat(
+                symbol=self.cfg.symbol,
+                mode="smoke" if self.runner_cfg.paper_smoke_mode else "mainline",
+                state=self.machine.context.state.value,
+                regime=regime.regime.value if regime else "unknown",
+                ib_connected=self.ib.isConnected() if self.ib else False,
+                market_data_available=self.market_ticker is not None,
+                open_positions=len(self.positions),
+                warmup_bars=len(self.history),
+                required_bars=self.required_warmup_bars,
+            )
+
         if self.warmup_mode:
             self._poll_warmup_once(allow_orders=True)
             return
@@ -962,6 +1008,95 @@ class PaperCorridorRunner:
             f" | realized={_format_signed_dollar(realized_dollars)}"
             f" | unrealized={_format_signed_dollar(unrealized_dollars)}"
             f" | open_positions={len(self.positions)}"
+        )
+
+    def _emit_cycle_decision_diagnostics(self, regime) -> None:
+        """Emit cycle decision diagnostics for smoke mode."""
+        if not self.diagnostics.enabled:
+            return
+
+        # Reset cycle emission tracking for new cycle
+        self.diagnostics.reset_cycle_emission_tracking()
+
+        # Get candidate diagnostics from latest load
+        candidate_diagnostics = self.latest_candidate_diagnostics
+        rejection_counts = candidate_diagnostics.get("rejection_counts", {}) if candidate_diagnostics else {}
+
+        # Count orders submitted this cycle
+        orders_submitted = 0
+        fills = 0
+        cancels = 0
+        replaces = 0
+
+        # Get today's orders for cycle metrics
+        local_date_iso = _ensure_utc_timestamp(pd.Timestamp.utcnow()).tz_convert("America/New_York").date().isoformat()
+        orders_today = self._rows_for_local_date(self.logger.paths["orders"], local_date_iso)
+        for row in orders_today:
+            status = str(row.get("status") or "").lower()
+            if status == "filled":
+                fills += 1
+                orders_submitted += 1
+            elif status in {"cancelled", "apicancelled", "inactive"}:
+                cancels += 1
+            elif status in {"submitted", "presubmitted", "pendingsubmit", "apipending"}:
+                orders_submitted += 1
+
+        # Determine top rejection reason and subcode
+        top_reject_reason = None
+        top_reject_subcode = None
+        if rejection_counts:
+            top_item = max(rejection_counts.items(), key=lambda item: (int(item[1]), item[0]))
+            top_reject_reason, top_reject_subcode = RejectionReason.parse_reason(top_item[0])
+
+        # Get eligible candidates count
+        eligible_candidates = len(self.positions) if self.positions else 0
+
+        self.diagnostics.emit_cycle_decision(
+            symbol=self.cfg.symbol,
+            regime=regime.regime.value if regime else "unknown",
+            state=self.machine.context.state.value,
+            chains_loaded=candidate_diagnostics.get("available_quotes", 0) > 0 if candidate_diagnostics else False,
+            candidates_generated=candidate_diagnostics.get("attempted_structures", 0) if candidate_diagnostics else 0,
+            rejection_counts=rejection_counts,
+            eligible_candidates=eligible_candidates,
+            orders_submitted=orders_submitted,
+            fills=fills,
+            cancels=cancels,
+            replaces=replaces,
+        )
+
+        # Emit candidate diagnostics for each candidate in the latest load
+        # Use the collector's internal caps - always emit top rejected + submitted
+        if candidate_diagnostics and self.runner_cfg.paper_smoke_mode:
+            sample_rejections = candidate_diagnostics.get("sample_rejections", [])
+            # Always emit top rejected
+            for i, rejection in enumerate(sample_rejections[:1]):  # Top 1 is always emitted
+                self.diagnostics.emit_candidate_diagnostic(
+                    symbol=self.cfg.symbol,
+                    regime=regime.regime.value if regime else "unknown",
+                    state=self.machine.context.state.value,
+                    candidate=rejection.get("candidate", {}),
+                    rejection_reason=rejection.get("reason"),
+                    is_submitted=False,
+                    is_top_rejected=True,
+                )
+            # Remaining are subject to volume caps
+            for rejection in sample_rejections[1:]:
+                self.diagnostics.emit_candidate_diagnostic(
+                    symbol=self.cfg.symbol,
+                    regime=regime.regime.value if regime else "unknown",
+                    state=self.machine.context.state.value,
+                    candidate=rejection.get("candidate", {}),
+                    rejection_reason=rejection.get("reason"),
+                    is_submitted=False,
+                    is_top_rejected=False,
+                )
+
+        # Preserve diagnostics for potential reconnect
+        self.diagnostics.preserve_diagnostics(
+            candidate_diagnostics=candidate_diagnostics,
+            market_data_ts=pd.Timestamp.utcnow() if self.market_ticker else None,
+            validity="complete",
         )
 
     def _process_smoke_mode_bar(
@@ -1461,6 +1596,11 @@ class PaperCorridorRunner:
                 )
             if allow_orders:
                 self._handle_action(action, center, regime)
+
+        # Emit cycle decision diagnostics for smoke mode
+        if self.runner_cfg.paper_smoke_mode and self.diagnostics.enabled and allow_orders:
+            self._emit_cycle_decision_diagnostics(regime)
+
         if self.runner_cfg.paper_smoke_mode:
             self._process_smoke_mode_bar(row, regime, center, allow_orders=allow_orders, emit_logs=emit_logs)
 
@@ -3095,6 +3235,47 @@ class PaperCorridorRunner:
         payload = message if not detail_lines else message + "\n" + "\n".join(detail_lines)
         send_discord_text_alert(self.discord_webhook_url, payload)
 
+    def _should_send_scheduled_discord_report(self, daily_report: dict[str, Any]) -> tuple[bool, str]:
+        """Determine if we should send a scheduled Discord report (morning or end-of-day).
+
+        Returns:
+            Tuple of (should_send, reason)
+        """
+        if not self.runner_cfg.discord_summary:
+            return False, "discord_summary_disabled"
+        if not self.discord_webhook_url:
+            return False, "no_webhook"
+
+        now_utc = _ensure_utc_timestamp(pd.Timestamp.utcnow())
+        report_date = daily_report.get("report_date")
+        if not report_date:
+            return False, "no_report_date"
+
+        # Get current trading day in ET (report_date is in ET)
+        current_et_date = now_utc.tz_convert("America/New_York").date().isoformat()
+
+        # Reset morning flag if we've moved to a new day
+        if self.last_discord_daily_report_date != current_et_date:
+            self.last_discord_morning_sent = False
+
+        # Determine if we're in morning window (9:30 AM - 10:00 AM ET)
+        current_time_et = now_utc.tz_convert("America/New_York").time()
+        is_morning_window = dt_time(9, 30) <= current_time_et < dt_time(10, 0)
+
+        # Determine if we're in end-of-day window (15:45 - 16:15 ET, after market close)
+        is_eod_window = dt_time(15, 45) <= current_time_et < dt_time(16, 15)
+
+        # Send morning report: first time in morning window, after 9:30 ET
+        if is_morning_window and not self.last_discord_morning_sent:
+            # Only send if we have activity from previous day or it's early in the day
+            return True, f"morning_report|{report_date}"
+
+        # Send end-of-day report: in EOD window and haven't sent for this date
+        if is_eod_window and self.last_discord_daily_report_date != current_et_date:
+            return True, f"eod_report|{current_et_date}"
+
+        return False, "outside_scheduled_window"
+
     def _maybe_send_discord_test_summary(
         self,
         daily_report: dict[str, Any],
@@ -3106,9 +3287,25 @@ class PaperCorridorRunner:
         if not self.discord_webhook_url:
             return
 
+        # Check if this is a scheduled report (morning or EOD)
+        should_send, send_reason = self._should_send_scheduled_discord_report(daily_report)
+        if not should_send:
+            return
+
         now_utc = _ensure_utc_timestamp(pd.Timestamp.utcnow())
+        current_et_date = now_utc.tz_convert("America/New_York").date().isoformat()
+
+        # For morning reports, use previous day's date; for EOD, use current
+        report_date = daily_report.get("report_date")
+        if send_reason.startswith("morning_report"):
+            # Morning report is about previous day's results
+            display_date = report_date or current_et_date
+        else:
+            display_date = current_et_date
+
+        # Build signature for deduplication
         signature_payload = {
-            "report_date": daily_report.get("report_date"),
+            "report_date": display_date,
             "overall_status": summary_payload.get("overall_status"),
             "filled_orders_today": summary_payload.get("filled_orders_today"),
             "open_positions_count": summary_payload.get("open_positions_count"),
@@ -3119,21 +3316,36 @@ class PaperCorridorRunner:
             "paper_smoke_mode": daily_report.get("paper_smoke_mode"),
             "sleeve_summaries": summary_payload.get("sleeve_summaries"),
             "chase_audit_summary": summary_payload.get("chase_audit_summary"),
+            "send_reason": send_reason,
         }
         signature = json.dumps(signature_payload, sort_keys=True, ensure_ascii=False)
+
+        # Check if we've already sent this exact report
         if signature == self.last_discord_summary_signature and self.last_discord_summary_sent_at is not None:
             elapsed = (now_utc - self.last_discord_summary_sent_at).total_seconds() / 60.0
             if elapsed < max(1, int(self.runner_cfg.discord_summary_min_interval_minutes)):
                 return
 
+        # Determine report type for header
+        if send_reason.startswith("morning_report"):
+            report_type = "Morning Recap"
+        else:
+            report_type = "EOD Summary"
+
         header = (
-            f"Discord Paper Summary | {self.cfg.symbol} | "
+            f"Discord {report_type} | {self.cfg.symbol} | "
+            f"{display_date} | "
             f"{'smoke' if self.runner_cfg.paper_smoke_mode else 'mainline'} | "
             f"{'paper' if self.runner_cfg.paper_execution else 'shadow'}"
         )
         send_discord_text_alert(self.discord_webhook_url, header + "\n" + summary_text.strip())
+
+        # Update tracking state
         self.last_discord_summary_signature = signature
         self.last_discord_summary_sent_at = now_utc
+        self.last_discord_daily_report_date = current_et_date
+        if send_reason.startswith("morning_report"):
+            self.last_discord_morning_sent = True
 
     def _long_butterfly_leg_specs(self, qualified_contracts) -> list[ComboLegSpec]:
         return [
